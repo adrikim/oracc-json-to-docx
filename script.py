@@ -11,11 +11,8 @@ from pprint import pprint
 from docx import Document
 
 """
-Parses one or more JSON files and outputs a well-formatted DOC(X).
-na-pul-tu ⸢a⸣-du-ú M.zum-bu-ta-a-nu -> upper bracket not visible in UTF-8 but u2 is fine, is it UTF-16 then? What about super/subscripts?
-"""
+Parses one or more JSON files and outputs a well-formatted DOC(X) file.
 
-"""
 Types of nodes:
 c(hunk): chunk of text; may be the entire text, a sentence/unit, clause, phrase, etc...
 l(emma): text token (inflected, conjugated, etc.) along with its lemmatization ("dictionary" form and specific meaning)
@@ -26,6 +23,25 @@ closing_punct_mirror = {
     "]": "[",
     ")": "(",
     ")]": "[(",
+}
+
+vowel_subscript_to_accent_map = {
+    "a": {
+        "two": "á",
+        "three": "à",
+    },
+    "e": {
+        "two": "é",
+        "three": "è",
+    },
+    "i": {
+        "two": "í",
+        "three": "ì",
+    },
+    "u": {
+        "two": "ú",
+        "three": "ù",
+    },
 }
 
 class JsonParser(object):
@@ -42,16 +58,16 @@ class JsonParser(object):
             raise Exception("Invalid path specified!")
         
     def run(self, json_name=None):
-        cdl_dict = self.load_json(self.file_path)
-        doc = Document()
-        print(doc.paragraphs)
-        res = self.parse_json(cdl_dict, doc)
-        self.print_doc(doc)
-        self.save_docx(doc)
+        for path in self.file_paths:
+            print("Parsing file at {0}".format(path))
+            cdl_dict = self.load_json(path)
+            doc = Document()
+            res = self.parse_json(cdl_dict, doc)
+            self.print_doc(doc)
+            self.save_docx(path, doc)
 
     def print_doc(self, doc):
         for p in doc.paragraphs:
-            print()
             s = ""
             for r in p.runs:
                 s += r.text
@@ -73,6 +89,8 @@ class JsonParser(object):
     def traverse_c_node(self, c_dict, doc):
         """Decides what to do for each of the nodes in a c-node's node list.
         """
+        if not c_dict.get("id", ""):
+            return
         print("At c-node {0}".format(c_dict["id"]))
         for node in c_dict["cdl"]:
             if node["node"] == "c":
@@ -81,6 +99,8 @@ class JsonParser(object):
                 self.parse_d_node(node, doc)
             elif node["node"] == "l":
                 self.parse_l_node(node, doc)
+            else:
+                print("Unknown node type for node {0}".format(node))
 
     def parse_d_node(self, d_dict, doc):
         """Parses a D-node and adds paragraphs to doc as needed.
@@ -117,7 +137,10 @@ class JsonParser(object):
         """Gets L-node text, formats it, and adds it to the last paragraph of doc.
         """
         assert(l_dict["node"] == "l")
+        if not l_dict["f"].get("gdl", ""):  # eg. Aramaic
+            return
         l_value = l_dict["frag"]
+        #pprint(l_dict)
 
         gdl_list = l_dict["f"]["gdl"]
         last_paragraph = doc.paragraphs[-1]
@@ -158,7 +181,7 @@ class JsonParser(object):
             paragraph.add_run("⸢")
 
         # Actual sign/word fragment
-        word = gdl_node["v"]
+        word = self._convert_h(self._convert_2_or_3_subscript(gdl_node["v"]))
         r = paragraph.add_run(word)
         if word.islower():
             r.italic = True
@@ -199,6 +222,7 @@ class JsonParser(object):
         if gdl_node["pos"] == "pre" or gdl_node["pos"] == "post":
             det_node = gdl_node["seq"][0]
             det = det_node.get("s", det_node.get("v", ""))
+            det = self._convert_h(self._convert_2_or_3_subscript(det))
             r = paragraph.add_run(det)  # TODO can seq have >1 member? Doesn't seem so, see {m}{d}
             r.font.superscript = True
         else:
@@ -225,7 +249,7 @@ class JsonParser(object):
             paragraph.add_run("⸢")
 
         # Actual logogram
-        logogram = gdl_node["s"]
+        logogram = self._convert_h(self._convert_2_or_3_subscript(gdl_node["s"]))
         paragraph.add_run(logogram)
 
         # Unknown/uncertain sign
@@ -279,6 +303,41 @@ class JsonParser(object):
         frag = frag_raw[index:]
         paragraph.add_run(frag)
 
+    def _convert_2_or_3_subscript(self, sign):
+        """Converts a sign containing a numerical 2 or 3 subscript to have its
+        first vowel be properly accented.
+        """
+        if not sign[-1].isdigit(): # No subscript # here
+            return sign
+        if sign[-2].isdigit():  # number was eg. 12 or 13- not just 2 or 3
+            return sign
+
+        if sign[-1] == "₂":
+            subscript_num = "two"
+        elif sign[-1] == "₃":
+            subscript_num = "three"
+        else:
+            return sign
+
+        # First vowel in sign will get the accent mark
+        for char in sign:
+            char_lower = char.lower()
+            if char_lower in "aeiu":
+                accented_char = vowel_subscript_to_accent_map[char_lower][subscript_num]
+                if char.isupper():
+                    accented_char = accented_char.upper()
+                return sign[:-1].replace(char, accented_char, 1)
+        print("You shouldn't be here!")
+        return sign
+                
+    def _convert_h(self, sign):
+        """Replaces h with ḫ, capital or lowercase.
+        """
+        if sign.islower():
+            return sign.replace("h", "ḫ")
+        else:
+            return sign.replace("H", "Ḫ")
+
     def parse_json(self, cdl_dict, doc):
         """
         Walks through the JSON object and pieces together all the lemmas.
@@ -300,7 +359,6 @@ class JsonParser(object):
         for c_node in nodes:
             chunk = c_node
             res = self.traverse_c_node(chunk, doc)
-            print(res)
 
     def save_docx(self, path, doc):
         """Save the resulting docx file to current directory.
@@ -333,7 +391,7 @@ def main():
     """
     parser = argparse.ArgumentParser(description='Parse your shit here.')
     parser.add_argument('--file', '-f', required=True,
-                        help='A path to the JSON file to parse into DOCX')
+                        help='A path (file or directory) to the JSON file to parse into DOCX')
     args = parser.parse_args()
     
     print("Using encoding {0}".format(sys.stdout.encoding)) # cp1252; can't process some UTF-8 stuff because wangblows :(
