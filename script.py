@@ -155,7 +155,7 @@ class JsonParser(object):
             elif "gg" in node_dict:
                 self._add_logogram_cluster(node_dict, last_paragraph)
             elif "x" in node_dict:
-                self._add_ellipsis(l_dict, last_paragraph)
+                self._add_ellipsis(node_dict, l_dict, last_paragraph)
             elif "n" in node_dict:
                 last_paragraph.add_run(node_dict["form"])
             else:
@@ -221,10 +221,32 @@ class JsonParser(object):
         assert(gdl_node.get("det", "") == "semantic")
         if gdl_node["pos"] == "pre" or gdl_node["pos"] == "post":
             det_node = gdl_node["seq"][0]
+
+            # Starting full bracket
+            if det_node.get("breakStart", ""):
+                paragraph.add_run("[")
+
+            # Upper left bracket
+            if det_node.get("ho", ""):
+                paragraph.add_run("⸢")
+
             det = det_node.get("s", det_node.get("v", ""))
             det = self._convert_h(self._convert_2_or_3_subscript(det))
-            r = paragraph.add_run(det)  # TODO can seq have >1 member? Doesn't seem so, see {m}{d}
+            r = paragraph.add_run(det)
             r.font.superscript = True
+
+            # Unknown/uncertain sign
+            if det_node.get("queried", ""):
+                r = paragraph.add_run("?")
+                r.font.superscript = True
+
+            # Upper right bracket
+            if det_node.get("hc", ""):
+                paragraph.add_run("⸣")
+
+            # Closing full bracket
+            if det_node.get("o", "") in closing_punct_mirror:
+                det += det_node["o"]
         else:
             print("Unknown determinative position {0}".format(gdl_node["pos"]))
 
@@ -237,6 +259,7 @@ class JsonParser(object):
           "delim": "-"
         },
         """
+        #pprint(gdl_node)
         assert(gdl_node.get("s") and
                gdl_node["role"] == "logo")
 
@@ -289,18 +312,31 @@ class JsonParser(object):
         """
         logo_group_dict = gdl_node["group"]
         for logo_dict in logo_group_dict:
-            self._add_logogram(logo_dict, paragraph)
+            if "s" in logo_dict:
+                self._add_logogram(logo_dict, paragraph)
+            elif "det" in logo_dict:
+                self._add_determinative(logo_dict, paragraph)
+            else:
+                print("Non-sign or determinative found in logogram cluster {0}".format(logo_dict))
         paragraph.add_run(gdl_node.get("delim", ""))
 
-    def _add_ellipsis(self, l_node, paragraph):
+    def _add_ellipsis(self, node_dict, l_node, paragraph):
         """Adds in things like (...), [...]
+        Start at [ (or beginning) and end at next delimiter (or end).
         Can't figure out how to correctly create from scratch, so just substring it for now...
         """
         frag_raw = l_node["frag"]
-        index = frag_raw.find("[")
-        if index == -1:
-            index = 0
-        frag = frag_raw[index:]
+
+        start_index = frag_raw.find("[")
+        if start_index == -1:
+            start_index = 0
+
+        if "delim" in node_dict:
+            end_index = frag_raw.find(node_dict["delim"]) + 1
+        else:
+            end_index = None
+
+        frag = frag_raw[start_index:end_index]
         paragraph.add_run(frag)
 
     def _convert_2_or_3_subscript(self, sign):
