@@ -189,6 +189,7 @@ class JsonParser(object):
 
         if d_type == "line-start":
             doc.add_paragraph()
+            #p.add_run(d_dict.get("label", "") + " ") # XXX don't know if I need this
 
         elif d_type == "obverse":
             p = doc.add_paragraph()
@@ -266,15 +267,7 @@ class JsonParser(object):
         """
         assert(l_dict["node"] == "l")
 
-        if l_dict["f"]["lang"] == "arc":  # eg. Aramaic
-            self.print_if_verbose("Aramaic node detected")
-            frag = l_dict["frag"]
-            if frag.isdigit():
-                pass # TODO add with space
-            else:
-                pass # TODO add and italicize only letters, no []
-            return
-
+        # Check if this frag's already been added
         ref = l_dict["ref"]
         if ref in self.l_reflist:
             self.print_if_verbose("Already added ref {0}, skipping".format(ref))
@@ -285,8 +278,14 @@ class JsonParser(object):
         l_value = l_dict["frag"]
         #pprint(l_dict)
 
-        gdl_list = l_dict["f"]["gdl"]
         last_paragraph = doc.paragraphs[-1]
+
+        if l_dict["f"]["lang"] == "arc":  # eg. Aramaic
+            self.print_if_verbose("Adding Aramaic node")
+            self._add_aramaic_frag(l_dict, last_paragraph)
+            return
+
+        gdl_list = l_dict["f"]["gdl"]
 
         for node_dict in gdl_list:
             if "s" in node_dict:
@@ -305,6 +304,21 @@ class JsonParser(object):
             else:
                 self.print_if_verbose("Unknown l-node {0}".format(node_dict))
         last_paragraph.add_run(l_dict["f"].get("delim", ""))
+
+    def _add_aramaic_frag(self, l_node, paragraph):
+        """Adds Aramaic fragment to current paragraph with all needed formatting.
+        See parse_l_node() description for an example L(emma) node.
+        Args:
+            l_node (dict): Aramaic lang node to be added
+            paragraph (docx...paragraph): paragraph to add Aramaic fragment to
+        """
+        frag = l_node.get("frag", "")
+        for char in frag:
+            r = paragraph.add_run(char)
+            if char.isalpha():
+                r.italic = True
+        # Aramaic nodes have no "delim", but should be separated with space
+        paragraph.add_run(" ")
 
     def _add_continuing_sign_form(self, gdl_node, paragraph):
         """Adds eg. tu- to the current paragraph.
@@ -503,6 +517,12 @@ class JsonParser(object):
     def _convert_2_or_3_subscript(self, sign):
         """Converts a sign containing a numerical 2 or 3 subscript to have its
         first vowel be properly accented.
+        Args:
+            sign (str): transliterated string of sign with some subscript,
+                 eg. bi₂
+        Returns:
+            str: transliterated string of sign with subscript transformed into
+                 accented mark, eg. bí for above example
         """
         if not sign[-1].isdigit(): # No subscript # here
             return sign
