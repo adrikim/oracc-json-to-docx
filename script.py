@@ -347,13 +347,12 @@ class JsonParser(object):
             elif "gg" in node_dict:
                 self._add_logogram_cluster(node_dict, last_paragraph)
             elif "x" in node_dict:
-                self._add_ellipsis(node_dict, l_dict, last_paragraph)
+                self._add_ellipsis(node_dict, last_paragraph)
             elif "n" in node_dict:
-                last_paragraph.add_run(node_dict["form"])
-                print_if_verbose("Added number {0}".format(node_dict["form"]))
+                self._add_number(node_dict, last_paragraph)
             else:
                 print_if_verbose("Unknown l-node {0}".format(node_dict))
-        last_paragraph.add_run(l_dict["f"].get("delim", ""))
+        last_paragraph.add_run(l_dict["f"].get("delim", "")) # TODO still needed?
 
     def _add_aramaic_frag(self, l_node, paragraph):
         """Adds Aramaic fragment to current paragraph with all needed formatting.
@@ -391,10 +390,6 @@ class JsonParser(object):
 
         self._add_post_frag_symbols(gdl_node, paragraph)
 
-        # Whatever delimiter follows, eg. - or space
-        if gdl_node.get("delim", ""):
-            paragraph.add_run(gdl_node["delim"])
-
     def _add_determinative(self, gdl_node, paragraph):
         """Adds determinative to given paragraph and adds necessary styling.
         Example of a node that this would work on (from rinap/rinap1/corpusjson/Q003414.json):
@@ -423,7 +418,7 @@ class JsonParser(object):
         if gdl_node["pos"] == "pre" or gdl_node["pos"] == "post":
             det_node = gdl_node["seq"][0]
 
-            self._add_pre_frag_symbols(gdl_node, paragraph)
+            self._add_pre_frag_symbols(det_node, paragraph) # TODO document why det node
 
             # Add the determinative to paragraph with needed stylings
             det = det_node.get("s", det_node.get("v", ""))
@@ -432,7 +427,7 @@ class JsonParser(object):
             r.font.superscript = True
             print_if_verbose("Added determinative {0}".format(det))
 
-            self._add_post_frag_symbols(gdl_node, paragraph)
+            self._add_post_frag_symbols(det_node, paragraph)
         else:
             print_if_verbose("Unknown determinative position {0}".format(gdl_node["pos"]))
 
@@ -472,10 +467,6 @@ class JsonParser(object):
         print_if_verbose("Added logogram {0}".format(logogram))
 
         self._add_post_frag_symbols(gdl_node, paragraph)
-
-        # Whatever delimiter follows, eg. - or space
-        if gdl_node.get("delim", ""):
-            paragraph.add_run(gdl_node["delim"])
 
     def _add_logogram_cluster(self, gdl_node, paragraph):
         """Adds >1 logograms to current paragraph, eg. GIC.TUG.PI.
@@ -523,34 +514,37 @@ class JsonParser(object):
                 self._add_logogram(logo_dict, paragraph)
             elif "det" in logo_dict:
                 self._add_determinative(logo_dict, paragraph)
+            elif "v" in logo_dict:
+                self._add_continuing_sign_form(logo_dict, paragraph)
+            elif "n" in logo_dict:
+                self._add_number(logo_dict, paragraph)
             else:
                 print_if_verbose("Non-sign or determinative found in logogram cluster {0}".format(logo_dict))
-        paragraph.add_run(gdl_node.get("delim", ""))
+        paragraph.add_run(gdl_node.get("delim", "")) # delim after the cluster
 
-    def _add_ellipsis(self, node_dict, l_node, paragraph):
+    def _add_ellipsis(self, gdl_node, paragraph):
         """Adds in things like (...), [...]
-        Start at [ (or beginning) and end at next delimiter (or end).
-        Can't figure out how to correctly create from scratch, so just substring it for now...
         """
-        frag_raw = l_node["frag"]
+        assert(gdl_node.get("x") == "ellipsis")
 
-        start_index = frag_raw.find("[")
-        if start_index == -1:
-            start_index = 0
+        self._add_pre_frag_symbols(gdl_node, paragraph)
+        paragraph.add_run("...")
+        self._add_post_frag_symbols(gdl_node, paragraph)
 
-        if "delim" in node_dict:
-            end_index = frag_raw.find(node_dict["delim"]) + 1
-        else:
-            end_index = None
+    def _add_number(self, gdl_node, paragraph):
+        """Adds a number to current paragraph, eg. 4.
+        """
+        self._add_pre_frag_symbols(gdl_node, paragraph)
+        paragraph.add_run(gdl_node["form"])
+        self._add_post_frag_symbols(gdl_node, paragraph)
 
-        frag = frag_raw[start_index:end_index]
-        paragraph.add_run(frag)
+        print_if_verbose("Added number {0}".format(gdl_node["form"]))
 
     def _add_pre_frag_symbols(self, gdl_node, paragraph):
         """Adds any symbols that come before the actual text fragment.
         These chars may be added: [ ⸢ < <<
         Args:
-            gdl_node (dict): dict of L(emma) node's "gdl" property
+            gdl_node (dict): dict of L(emma) node's "gdl" property TODO not for det!
             paragraph (docx.text.paragraph.Paragraph): paragraph to add to
         """
         # Full fragment break start
@@ -599,6 +593,10 @@ class JsonParser(object):
         # Full fragment break end
         if gdl_node.get("breakEnd", ""):
             paragraph.add_run("]")
+
+        # Whatever delimiter follows, eg. - or space
+        if gdl_node.get("delim", ""):
+            paragraph.add_run(gdl_node["delim"])
 
     def _convert_2_or_3_subscript(self, sign):
         """Converts a sign containing a numerical 2 or 3 subscript to have its
