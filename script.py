@@ -102,7 +102,7 @@ class JsonLoader(object):
                     json_dict = json.loads(raw_str)
                     json_dicts.append(json_dict)
             except Exception as e:
-                print(e)
+                print("Could not load {0} to dict: {1}".format(json_path, e))
                 json_dicts.append({})
         return json_dicts
 
@@ -122,7 +122,10 @@ class JsonParser(object):
         """Loads and parses given ORACC JSON, then saves the pieced-together
         text into a docx on disk.
         """
-        textid = self.cdl_dict["textid"]
+        textid = self.cdl_dict.get("textid", "")
+        if not textid:
+            print("Skipping this mystery gang!")
+            return
         print_if_verbose(
             "Parsing textid {0} from project {1}".format(textid, self.cdl_dict["project"])
         )
@@ -303,19 +306,6 @@ class JsonParser(object):
             }
         }
 
-        Example of Aramaic L node which this function will work on (in rinap/rinap1/corpusjson/Q003633.json):
-        {
-            "node": "l",
-            "frag": "mnn",
-            "id": "Q003633.l00075",
-            "ref": "Q003633.1.1",
-            "inst": "%arc:mnn=",
-            "f": {
-                "lang": "arc",
-                "form": "mnn"
-            }
-        }
-
         Args:
             l_dict (dict): dict version of an L node above
             doc (docx.Document): document object to append lemma to
@@ -329,11 +319,18 @@ class JsonParser(object):
             self.l_reflist.append(ref)
 
         last_paragraph = doc.paragraphs[-1]
+        lang = l_dict["f"]["lang"]
 
-        if l_dict["f"]["lang"] == "arc":  # eg. Aramaic
-            print_if_verbose("Adding Aramaic node")
+        if lang == "arc":  # eg. Aramaic
+            print_if_verbose("Adding Aramaic fragment")
             self._add_aramaic_frag(l_dict, last_paragraph)
             return
+        elif lang == "qcu-949": # seemingly English...
+            print_if_verbose("Adding English fragment")
+            self._add_english_frag(l_dict, last_paragraph)
+            return
+        elif lang != "akk": # eg. sux for Sumerian
+            print_if_verbose("Unrecognized language {0}".format(lang))
 
         gdl_list = l_dict["f"]["gdl"]
 
@@ -356,7 +353,18 @@ class JsonParser(object):
 
     def _add_aramaic_frag(self, l_node, paragraph):
         """Adds Aramaic fragment to current paragraph with all needed formatting.
-        See parse_l_node() description for an example L(emma) node.
+        Example of Aramaic L node which this function will work on (in rinap/rinap1/corpusjson/Q003633.json):
+        {
+            "node": "l",
+            "frag": "mnn",
+            "id": "Q003633.l00075",
+            "ref": "Q003633.1.1",
+            "inst": "%arc:mnn=",
+            "f": {
+                "lang": "arc",
+                "form": "mnn"
+            }
+        }
         Args:
             l_node (dict): Aramaic lang node to be added
             paragraph (docx.text.paragraph.Paragraph): paragraph to add Aramaic fragment to
@@ -368,6 +376,30 @@ class JsonParser(object):
                 r.italic = True
         # Aramaic nodes have no "delim", but should be separated with space
         paragraph.add_run(" ")
+
+    def _add_english_frag(self, l_node, paragraph):
+        """Adds English fragment to current paragraph with all needed formatting.
+        Example of English L node which this function will work on (in rinap/rinap4/corpusjson/Q003344.json):
+        {
+            "node": "l",
+            "frag": "Horned",
+            "id": "Q003344.l05b8e",
+            "ref": "Q003344.3.1",
+            "inst": "%qcu-949:*=",
+            "f": {
+              "lang": "qcu-949",
+              "form": "*",
+              "norm": "Horned"
+            }
+        }
+
+        Args:
+            l_node (dict): English lang node to be added
+            paragraph (docx.text.paragraph.Paragraph): paragraph to add English fragment to
+        """
+        frag = l_node["frag"]
+        paragraph.add_run(frag)
+        paragraph.add_run(" ") # English nodes have no other default delim
 
     def _add_continuing_sign_form(self, gdl_node, paragraph):
         """Adds eg. tu- to the current paragraph.
@@ -413,7 +445,8 @@ class JsonParser(object):
             paragraph (docx.text.paragraph.Paragraph): Paragraph object
                 that will append the new determinative
         """
-        assert(gdl_node.get("det", "") == "semantic")
+        assert(gdl_node.get("det", "") == "semantic" or
+               gdl_node.get("det", "") == "phonetic")
 
         if gdl_node["pos"] == "pre" or gdl_node["pos"] == "post":
             det_node = gdl_node["seq"][0]
@@ -518,6 +551,10 @@ class JsonParser(object):
                 self._add_continuing_sign_form(logo_dict, paragraph)
             elif "n" in logo_dict:
                 self._add_number(logo_dict, paragraph)
+            elif "gg" in logo_dict:
+                self._add_logogram_cluster(logo_dict, paragraph) # eg. for ligatures
+            elif "x" in logo_dict:
+                self._add_ellipsis(logo_dict, paragraph)
             else:
                 print_if_verbose("Non-sign or determinative found in logogram cluster {0}".format(logo_dict))
         paragraph.add_run(gdl_node.get("delim", "")) # delim after the cluster
