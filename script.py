@@ -24,6 +24,7 @@ closing_punct_mirror = {
     ")": "(",
     ">": "<",
     ">>": "<<",
+    ")>": "<(",
 }
 
 # Used to transform eg. a2 to á in the final result docx.
@@ -50,6 +51,7 @@ VERBOSE_FLAG = False
 
 
 def print_if_verbose(msg):
+    global VERBOSE_FLAG
     if VERBOSE_FLAG:
         print(msg)
 
@@ -62,11 +64,10 @@ class JsonLoader(object):
     def __init__(self, original_path):
         print_if_verbose("Using encoding {0}".format(sys.stdout.encoding)) # cp1252; can't process some UTF-8 stuff because windoze :(
 
-        self.original_path = original_path
-        self.json_paths = self._get_file_paths()
+        self.json_paths = self._get_file_paths(original_path)
         self.json_dicts = self._load_json_dicts()
 
-    def _get_file_paths(self):
+    def _get_file_paths(self, original_path):
         """Returns a list of one or more ORACC JSON files to read. Passing
         in a directory will result in a list of all JSONs in that directory.
         Args:
@@ -77,7 +78,7 @@ class JsonLoader(object):
         Raises:
             Exception: if original_path is invalid
         """
-        if os.path.isfile(self.original_path):
+        if os.path.isfile(original_path):
             return [original_path]
         elif os.path.isdir(original_path):  # glob the files directly in dir
             path = os.path.join(original_path, "*.json")
@@ -96,7 +97,7 @@ class JsonLoader(object):
         json_dicts = []
         for json_path in self.json_paths:
             try:
-                with open(path, encoding="utf_8_sig") as fd:
+                with open(json_path, encoding="utf_8_sig") as fd:
                     raw_str = fd.read()
                     json_dict = json.loads(raw_str)
                     json_dicts.append(json_dict)
@@ -128,7 +129,7 @@ class JsonParser(object):
         doc = Document()
         res = self.parse_json(doc)
         self.print_doc(doc)
-        self.save_docx(path, doc)
+        self.save_docx(textid, doc)
 
     def parse_json(self, doc):
         """Walks through the JSON object and pieces together all the lemmas.
@@ -161,7 +162,7 @@ class JsonParser(object):
         try:
             name = textid + ".docx"
             doc.save(name)
-            print_if_verbose("Saved doc as {0}.docx".format(name))
+            print_if_verbose("Saved doc as {0}".format(name))
         except Exception as e:
             print_if_verbose("Couldn't save docx! {0}".format(e))
 
@@ -379,17 +380,7 @@ class JsonParser(object):
           "delim": "-"
         }
         """
-        # Starting full bracket - TODO switch to not rely on dict, if no breakEnd just use o
-        if gdl_node.get("breakStart", ""):
-            bracket = gdl_node.get("o")
-            if gdl_node.get("breakEnd", ""): # use opposite of what's in o, as it's for end bracket
-                paragraph.add_run(closing_punct_mirror[bracket])
-            else: # this sign only has starting bracket but not end
-                paragraph.add_run(bracket)
-
-        # Upper left bracket
-        if gdl_node.get("ho", ""):
-            paragraph.add_run("⸢")
+        self._add_pre_frag_symbols(gdl_node, paragraph)
 
         # Actual sign/word fragment
         word = self._convert_h(self._convert_2_or_3_subscript(gdl_node["v"]))
@@ -398,18 +389,7 @@ class JsonParser(object):
             r.italic = True
         print_if_verbose("Added continuing sign {0}".format(word))
 
-        # Unknown/uncertain sign
-        if gdl_node.get("queried", ""):
-            r = paragraph.add_run("?")
-            r.font.superscript = True
-
-        # Upper right bracket
-        if gdl_node.get("hc", ""):
-            paragraph.add_run("⸣")
-
-        # Closing full bracket - TODO switch to breakEnd
-        if gdl_node.get("o", "") in closing_punct_mirror:
-            paragraph.add_run(gdl_node["o"])
+        self._add_post_frag_symbols(gdl_node, paragraph)
 
         # Whatever delimiter follows, eg. - or space
         if gdl_node.get("delim", ""):
@@ -443,13 +423,7 @@ class JsonParser(object):
         if gdl_node["pos"] == "pre" or gdl_node["pos"] == "post":
             det_node = gdl_node["seq"][0]
 
-            # Starting full bracket
-            if det_node.get("breakStart", ""):
-                paragraph.add_run("[")
-
-            # Upper left bracket
-            if det_node.get("ho", ""):
-                paragraph.add_run("⸢")
+            self._add_pre_frag_symbols(gdl_node, paragraph)
 
             # Add the determinative to paragraph with needed stylings
             det = det_node.get("s", det_node.get("v", ""))
@@ -458,18 +432,7 @@ class JsonParser(object):
             r.font.superscript = True
             print_if_verbose("Added determinative {0}".format(det))
 
-            # Unknown/uncertain sign
-            if det_node.get("queried", ""):
-                r = paragraph.add_run("?")
-                r.font.superscript = True
-
-            # Upper right bracket
-            if det_node.get("hc", ""):
-                paragraph.add_run("⸣")
-
-            # Closing full bracket
-            if det_node.get("o", "") in closing_punct_mirror:
-                det += det_node["o"]
+            self._add_post_frag_symbols(gdl_node, paragraph)
         else:
             print_if_verbose("Unknown determinative position {0}".format(gdl_node["pos"]))
 
@@ -501,31 +464,14 @@ class JsonParser(object):
         assert(gdl_node.get("s", "") and
                gdl_node.get("role", "") == "logo")
 
-        # Starting full bracket
-        if gdl_node.get("breakStart", ""):
-            paragraph.add_run("[")
-
-        # Upper left bracket
-        if gdl_node.get("ho", ""):
-            paragraph.add_run("⸢")
+        self._add_pre_frag_symbols(gdl_node, paragraph)
 
         # Add actual logogram
         logogram = self._convert_h(self._convert_2_or_3_subscript(gdl_node["s"]))
         paragraph.add_run(logogram)
         print_if_verbose("Added logogram {0}".format(logogram))
 
-        # Unknown/uncertain sign
-        if gdl_node.get("queried", ""):
-            r = paragraph.add_run("?")
-            r.font.superscript = True
-
-        # Upper right bracket
-        if gdl_node.get("hc", ""):
-            paragraph.add_run("⸣")
-
-        # Closing full bracket
-        if gdl_node.get("o", "") in closing_punct_mirror:
-            paragraph.add_run(gdl_node["o"])
+        self._add_post_frag_symbols(gdl_node, paragraph)
 
         # Whatever delimiter follows, eg. - or space
         if gdl_node.get("delim", ""):
@@ -613,13 +559,13 @@ class JsonParser(object):
 
         # o for whatever reason may include [ or ], but this is already taken
         # care of by breakStart and breakEnd. Leave o to just be eg. ( ) < >>
-        o_frag = gdl_node["o"].strip("[]")
-        if gdl_node["statusStart"] == gdl_node["id"]:
+        o_frag = gdl_node.get("o", "").strip("[]")
+        if "id" in gdl_node and gdl_node.get("statusStart", "") == gdl_node["id"]:
             # o needs to be mirrored first to be an opener frag like ( or < or <<
-            o_mirror = closing_punct_mirror(o_frag)
+            o_mirror = closing_punct_mirror[o_frag]
             paragraph.add_run(o_mirror)
 
-        elif gdl_node["statusStart"] == 1:
+        elif gdl_node.get("statusStart", "") == 1:
             # o should already be an opener frag like ( or < or <<
             paragraph.add_run(o_frag)
 
@@ -634,22 +580,25 @@ class JsonParser(object):
             gdl_node (dict): dict of L(emma) node's "gdl" property
             paragraph (docx.text.paragraph.Paragraph): paragraph to add to
         """
+        # Unknown/uncertain sign
         if gdl_node.get("queried", ""):
             r = paragraph.add_run("?")
             r.font.superscript = True
 
+        # Partial fragment break end
         if gdl_node.get("hc", ""):
             paragraph.add_run("⸣")
 
         # o for whatever reason may include [ or ], but this is already taken
         # care of by breakStart and breakEnd. Leave o to just be eg. ( ) < >>
-        o_frag = gdl_node["o"].strip("[]")
-        if gdl_node["statusStart"] == gdl_node["id"]:
+        o_frag = gdl_node.get("o", "").strip("[]")
+        if "id" in gdl_node and gdl_node.get("statusStart", "") == gdl_node["id"]:
             # o should already be a closer frag like ) or > or >>
             paragraph.add_run(o_frag)
 
+        # Full fragment break end
         if gdl_node.get("breakEnd", ""):
-            pass
+            paragraph.add_run("]")
 
     def _convert_2_or_3_subscript(self, sign):
         """Converts a sign containing a numerical 2 or 3 subscript to have its
@@ -716,11 +665,12 @@ def main():
     parser = argparse.ArgumentParser(description='Parse your shit here.')
     parser.add_argument('--file', '-f', required=True,
                         help='A path (file or directory) to the JSON file to parse into DOCX')
-    parser.add_argument('--verbose', '-v', required=False, default=False, action="store_true",
+    parser.add_argument('--verbose', '-v', required=False, action="store_true",
                         help='Enable verbose mode during parsing')
     args = parser.parse_args()
 
     if args.verbose:
+        global VERBOSE_FLAG
         VERBOSE_FLAG = True
 
     jl = JsonLoader(args.file)
