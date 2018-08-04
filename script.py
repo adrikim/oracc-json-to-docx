@@ -22,7 +22,8 @@ d(iscontinuity): line break, surface transition, or damage
 closing_punct_mirror = {
     "]": "[",
     ")": "(",
-    ")]": "[(",
+    ">": "<",
+    ">>": "<<",
 }
 
 # Used to transform eg. a2 to á in the final result docx.
@@ -45,19 +46,27 @@ vowel_subscript_to_accent_map = {
     },
 }
 
+VERBOSE_FLAG = False
 
-class JsonParser(object):
+
+def print_if_verbose(msg):
+    if VERBOSE_FLAG:
+        print(msg)
+
+
+class JsonLoader(object):
     """
-    Class to take in a local JSON file and output a docx.
+    Class to read from a filename/pathname containing one or more JSON files
+    and make accessible a list of dicts.
     """
-    def __init__(self, original_path, verbose):
-        self.verbose = verbose
-        self.l_reflist = [] # for repeat nodes
-        self.file_paths = self._get_file_paths(original_path)
+    def __init__(self, original_path):
+        print_if_verbose("Using encoding {0}".format(sys.stdout.encoding)) # cp1252; can't process some UTF-8 stuff because windoze :(
 
-        self.print_if_verbose("Using encoding {0}".format(sys.stdout.encoding)) # cp1252; can't process some UTF-8 stuff because windoze :(
+        self.original_path = original_path
+        self.json_paths = self._get_file_paths()
+        self.json_dicts = self._load_json_dicts()
 
-    def _get_file_paths(self, original_path):
+    def _get_file_paths(self):
         """Returns a list of one or more ORACC JSON files to read. Passing
         in a directory will result in a list of all JSONs in that directory.
         Args:
@@ -68,30 +77,93 @@ class JsonParser(object):
         Raises:
             Exception: if original_path is invalid
         """
-        if os.path.isfile(original_path):
+        if os.path.isfile(self.original_path):
             return [original_path]
-        elif os.path.isdir(path):  # glob the files directly in dir
-            path = os.path.join(path, "*.json")
+        elif os.path.isdir(original_path):  # glob the files directly in dir
+            path = os.path.join(original_path, "*.json")
             return glob.glob(path)
         else:
             raise Exception("Invalid path specified! "
                             "Please ensure that your given path points to either "
                             "a .json or a directory containing .json files.")
 
-    def run(self, json_name=None):
+    def _load_json_dicts(self):
+        """Loads one or more ORACC JSON files into one or more python dicts.
+        If a JSON file is unable to be read, its corresponding dict will be empty.
+        Returns:
+            list (dict): loaded from the raw JSON files
+        """
+        json_dicts = []
+        for json_path in self.json_paths:
+            try:
+                with open(path, encoding="utf_8_sig") as fd:
+                    raw_str = fd.read()
+                    json_dict = json.loads(raw_str)
+                    json_dicts.append(json_dict)
+            except Exception as e:
+                print(e)
+                json_dicts.append({})
+        return json_dicts
+
+    def get_json_dicts(self):
+        return self.json_dicts # TODO make this into property
+
+
+class JsonParser(object):
+    """
+    Class to take in a local JSON file and output a docx.
+    """
+    def __init__(self, json_dict):
+        self.cdl_dict = json_dict
+        self.l_reflist = [] # for repeat nodes
+
+    def run(self):
         """Loads and parses given ORACC JSON, then saves the pieced-together
         text into a docx on disk.
-
-        Args:
-            json_name (str): TODO not doing anything atm
         """
-        for path in self.file_paths:
-            self.print_if_verbose("Parsing file at {0}".format(path))
-            cdl_dict = self.load_json(path)
-            doc = Document()
-            res = self.parse_json(cdl_dict, doc)
-            self.print_doc(doc)
-            self.save_docx(path, doc)
+        textid = self.cdl_dict["textid"]
+        print_if_verbose(
+            "Parsing textid {0} from project {1}".format(textid, self.cdl_dict["project"])
+        )
+        doc = Document()
+        res = self.parse_json(doc)
+        self.print_doc(doc)
+        self.save_docx(path, doc)
+
+    def parse_json(self, doc):
+        """Walks through the JSON object and pieces together all the lemmas.
+        No new sections like obverse/reverse yet.
+
+        dict[cdl] is list
+        dict[cdl][3] (or whatever index) has node == c; start parsing there
+        dict[cdl][3][cdl] contains list of dicts with actual lemmas/line breaks
+        """
+        if not self.cdl_dict:
+            return
+
+        if self.cdl_dict["type"] != "cdl":
+            print_if_verbose("Not a CDL-type JSON!\n")
+            return
+
+        nodes = self.cdl_dict["cdl"]
+        for c_node in nodes:
+            chunk = c_node
+            res = self.traverse_c_node(chunk, doc)
+
+    def save_docx(self, textid, doc):
+        """Attempt to save the resulting docx file to current directory where
+        script originally ran.
+        Args:
+            textid (str): ID of original JSON dict; basis of save name
+                (eg. Q003456 -> Q003456.docx)
+            doc (docx.Document): fully assembled docx object to be saved
+        """
+        try:
+            name = textid + ".docx"
+            doc.save(name)
+            print_if_verbose("Saved doc as {0}.docx".format(name))
+        except Exception as e:
+            print_if_verbose("Couldn't save docx! {0}".format(e))
 
     def print_doc(self, doc):
         """Utility function to print resulting fully assembled text to console.
@@ -101,47 +173,31 @@ class JsonParser(object):
         Args:
             doc (docx.Document): fully assembled text result to be printed
         """
-        # full_left_brackets = 0
-        # full_right_brackets = 0
-        # partial_left_brackets = 0
-        # partial_right_brackets = 0
+        full_left_brackets = 0
+        full_right_brackets = 0
+        partial_left_brackets = 0
+        partial_right_brackets = 0
         for p in doc.paragraphs:
             s = ""
-            # for r in p.runs:
-            #     s += r.text
-            #     if r == "[":
-            #         full_left_brackets += 1
-            #     elif r == "]":
-            #         full_right_brackets += 1
-            #     elif r == "⸢":
-            #         partial_left_brackets += 1
-            #     elif r == "⸣":
-            #         partial_right_brackets += 1
+            for r in p.runs:
+                s += r.text
+                if "[" in r.text:
+                    full_left_brackets += 1
+                elif "]" in r.text:
+                    full_right_brackets += 1
+                elif "⸢" in r.text:
+                    partial_left_brackets += 1
+                elif "⸣" in r.text:
+                    partial_right_brackets += 1
             print(s)
 
-        # Seeing if we're balanced or not. TODO none of these get bracket properly, it's embedded in run with text
-        # print("[ count: {0}".format(full_left_brackets))
-        # print("] count: {0}".format(full_right_brackets))
-        # print("⸢ count: {0}".format(partial_left_brackets))
-        # print("⸣ count: {0}".format(partial_left_brackets))
-        # assert(full_left_brackets == full_right_brackets)
-        # assert(partial_left_brackets == partial_right_brackets)
-
-    def load_json(self, path):
-        """Loads an ORACC JSON file into a python dict.
-        Args:
-            path (str): Relative or absolute path to JSON to read.
-        Returns:
-            dict: loaded from the raw JSON. Empty if JSON is unable to be read.
-        """
-        try:
-            with open(path, encoding="utf_8_sig") as fd:
-                raw_str = fd.read()
-                json_dict = json.loads(raw_str)
-                return json_dict
-        except Exception as e:
-            print(e)
-            return {}
+        # Seeing if we're balanced or not
+        print("[ count: {0}".format(full_left_brackets))
+        print("] count: {0}".format(full_right_brackets))
+        print("⸢ count: {0}".format(partial_left_brackets))
+        print("⸣ count: {0}".format(partial_left_brackets))
+        assert(full_left_brackets == full_right_brackets)
+        assert(partial_left_brackets == partial_right_brackets)
 
     def traverse_c_node(self, c_dict, doc):
         """Decides what to do for each of the nodes in a c-node's node list.
@@ -155,12 +211,10 @@ class JsonParser(object):
             doc (docx.Document): docx object to append lemmas to
         """
         if not c_dict.get("id", ""):
-            self.print_if_verbose("No id for this c-node!")
+            print_if_verbose("No id for this c-node!")
             return
-        #if c_dict.get("type", "") == "phrase":
-            #self.print_if_verbose("Phrase c-node here, don't mind me")
 
-        self.print_if_verbose("At c-node {0}".format(c_dict["id"]))
+        print_if_verbose("At c-node {0}".format(c_dict["id"]))
 
         for node in c_dict["cdl"]:
             if node["node"] == "c":
@@ -170,10 +224,10 @@ class JsonParser(object):
             elif node["node"] == "l":
                 self.parse_l_node(node, doc)
             else:
-                self.print_if_verbose("Unknown node type for node {0}".format(node))
+                print_if_verbose("Unknown node type for node {0}".format(node))
 
     def parse_d_node(self, d_dict, doc):
-        """Parses a D-node and adds paragraphs to doc as needed.
+        """Parses a D(iscontinuity) node and adds paragraphs to doc as needed.
         Types of d-node values:
           - line-start
           - obverse
@@ -182,7 +236,7 @@ class JsonParser(object):
           - surface
           - tablet
           - punct
-          - nonx
+          - nonx/nonw
         """
         assert(d_dict["node"] == "d")
         d_type = d_dict["type"]
@@ -207,7 +261,7 @@ class JsonParser(object):
             p.add_run(d_dict.get("delim", ""))
 
         else:
-            self.print_if_verbose("Unknown d-value {0}".format(d_type))
+            print_if_verbose("Unknown or noop d-value {0}".format(d_type))
 
     def parse_l_node(self, l_dict, doc):
         """Gets L(emma) node text, formats it, and adds it to the last paragraph of doc.
@@ -265,23 +319,18 @@ class JsonParser(object):
             l_dict (dict): dict version of an L node above
             doc (docx.Document): document object to append lemma to
         """
-        assert(l_dict["node"] == "l")
-
         # Check if this frag's already been added
         ref = l_dict["ref"]
         if ref in self.l_reflist:
-            self.print_if_verbose("Already added ref {0}, skipping".format(ref))
+            print_if_verbose("Already added ref {0}, skipping".format(ref))
             return
         else:
             self.l_reflist.append(ref)
 
-        l_value = l_dict["frag"]
-        #pprint(l_dict)
-
         last_paragraph = doc.paragraphs[-1]
 
         if l_dict["f"]["lang"] == "arc":  # eg. Aramaic
-            self.print_if_verbose("Adding Aramaic node")
+            print_if_verbose("Adding Aramaic node")
             self._add_aramaic_frag(l_dict, last_paragraph)
             return
 
@@ -300,9 +349,9 @@ class JsonParser(object):
                 self._add_ellipsis(node_dict, l_dict, last_paragraph)
             elif "n" in node_dict:
                 last_paragraph.add_run(node_dict["form"])
-                self.print_if_verbose("Added number {0}".format(node_dict["form"]))
+                print_if_verbose("Added number {0}".format(node_dict["form"]))
             else:
-                self.print_if_verbose("Unknown l-node {0}".format(node_dict))
+                print_if_verbose("Unknown l-node {0}".format(node_dict))
         last_paragraph.add_run(l_dict["f"].get("delim", ""))
 
     def _add_aramaic_frag(self, l_node, paragraph):
@@ -310,7 +359,7 @@ class JsonParser(object):
         See parse_l_node() description for an example L(emma) node.
         Args:
             l_node (dict): Aramaic lang node to be added
-            paragraph (docx...paragraph): paragraph to add Aramaic fragment to
+            paragraph (docx.text.paragraph.Paragraph): paragraph to add Aramaic fragment to
         """
         frag = l_node.get("frag", "")
         for char in frag:
@@ -347,7 +396,7 @@ class JsonParser(object):
         r = paragraph.add_run(word)
         if word.islower():
             r.italic = True
-        self.print_if_verbose("Added continuing sign {0}".format(word))
+        print_if_verbose("Added continuing sign {0}".format(word))
 
         # Unknown/uncertain sign
         if gdl_node.get("queried", ""):
@@ -407,7 +456,7 @@ class JsonParser(object):
             det = self._convert_h(self._convert_2_or_3_subscript(det))
             r = paragraph.add_run(det)
             r.font.superscript = True
-            self.print_if_verbose("Added determinative {0}".format(det))
+            print_if_verbose("Added determinative {0}".format(det))
 
             # Unknown/uncertain sign
             if det_node.get("queried", ""):
@@ -422,18 +471,33 @@ class JsonParser(object):
             if det_node.get("o", "") in closing_punct_mirror:
                 det += det_node["o"]
         else:
-            self.print_if_verbose("Unknown determinative position {0}".format(gdl_node["pos"]))
+            print_if_verbose("Unknown determinative position {0}".format(gdl_node["pos"]))
 
     def _add_logogram(self, gdl_node, paragraph):
-        """Adds a standalone logogram to current paragraph.
-        eg.
+        """Adds a standalone logogram to current paragraph, eg. LUGAL.
+        Example L(emma) node (from rinap/rinap1/corpusjson/Q003627.json):
         {
-          "s": "BAD₃",
-          "role": "logo",
-          "delim": "-"
-        },
+            "node": "l",
+            "frag": "LUGAL",
+            "id": "Q003627.l00054",
+            "ref": "Q003627.2.4",
+            "inst": "šarri[king]N +.",
+            "sig": "@rinap/rinap1%akk:LUGAL=šarru[king//king]N'N$šarri",
+            "f": {
+              "lang": "akk",
+              "form": "LUGAL",
+              "gdl": [ # begin gdl_node
+                {
+                  "s": "LUGAL",
+                  "gdl_utf8": "𒈗",
+                  "id": "Q003627.2.4.0",
+                  "role": "logo",
+                  "logolang": "sux"
+                }
+              ], # end gdl_node
+              ...
+        }
         """
-        #pprint(gdl_node)
         assert(gdl_node.get("s", "") and
                gdl_node.get("role", "") == "logo")
 
@@ -445,10 +509,10 @@ class JsonParser(object):
         if gdl_node.get("ho", ""):
             paragraph.add_run("⸢")
 
-        # Actual logogram
+        # Add actual logogram
         logogram = self._convert_h(self._convert_2_or_3_subscript(gdl_node["s"]))
         paragraph.add_run(logogram)
-        self.print_if_verbose("Added logogram {0}".format(logogram))
+        print_if_verbose("Added logogram {0}".format(logogram))
 
         # Unknown/uncertain sign
         if gdl_node.get("queried", ""):
@@ -468,22 +532,44 @@ class JsonParser(object):
             paragraph.add_run(gdl_node["delim"])
 
     def _add_logogram_cluster(self, gdl_node, paragraph):
-        """Adds >1 logograms to current paragraph, eg. GIC.TUG.PI
-        eg.
+        """Adds >1 logograms to current paragraph, eg. GIC.TUG.PI.
+        Example L(emma) node containing gdl node "gdl" (from rinap/rinap1/corpusjson/Q003627.json):
         {
-          'gg': 'logo',
-          'group': [{
-            's': 'KUR',
-            'break': 'damaged',
-            'ho': '1',
-            'delim': '.'
-          },
-          {
-             's': 'KUR',
-             'break': 'damaged',
-             'hc': '1'
-          }
-        ]}
+            "node": "l",
+            "frag": "MA.NA",
+            "id": "Q003627.l00052",
+            "ref": "Q003627.2.2",
+            "inst": "manê[a unit of weight]N",
+            "sig": "@rinap/rinap1%akk:MA.NA=manû[unit//a unit of weight]N'N$manê",
+            "f": {
+              "lang": "akk",
+              "form": "MA.NA",
+              "delim": " ",
+              "gdl": [ # begin gdl_node
+                {
+                   "gg": "logo",
+                   "gdl_type": "logo",
+                   "group": [
+                     {
+                       "s": "MA",
+                       "gdl_utf8": "𒈠",
+                       "id": "Q003627.2.2.0",
+                       "role": "logo",
+                       "logolang": "sux",
+                       "delim": "."
+                     },
+                     {
+                       "s": "NA",
+                       "gdl_utf8": "𒈾",
+                       "id": "Q003627.2.2.1",
+                       "role": "logo",
+                       "logolang": "sux"
+                     }
+                  ]
+                }
+            ], # end gdl_node
+            ...
+        }
         """
         logo_group_dict = gdl_node["group"]
         for logo_dict in logo_group_dict:
@@ -492,7 +578,7 @@ class JsonParser(object):
             elif "det" in logo_dict:
                 self._add_determinative(logo_dict, paragraph)
             else:
-                self.print_if_verbose("Non-sign or determinative found in logogram cluster {0}".format(logo_dict))
+                print_if_verbose("Non-sign or determinative found in logogram cluster {0}".format(logo_dict))
         paragraph.add_run(gdl_node.get("delim", ""))
 
     def _add_ellipsis(self, node_dict, l_node, paragraph):
@@ -513,6 +599,57 @@ class JsonParser(object):
 
         frag = frag_raw[start_index:end_index]
         paragraph.add_run(frag)
+
+    def _add_pre_frag_symbols(self, gdl_node, paragraph):
+        """Adds any symbols that come before the actual text fragment.
+        These chars may be added: [ ⸢ < <<
+        Args:
+            gdl_node (dict): dict of L(emma) node's "gdl" property
+            paragraph (docx.text.paragraph.Paragraph): paragraph to add to
+        """
+        # Full fragment break start
+        if gdl_node.get("breakStart", ""):
+            paragraph.add_run("[")
+
+        # o for whatever reason may include [ or ], but this is already taken
+        # care of by breakStart and breakEnd. Leave o to just be eg. ( ) < >>
+        o_frag = gdl_node["o"].strip("[]")
+        if gdl_node["statusStart"] == gdl_node["id"]:
+            # o needs to be mirrored first to be an opener frag like ( or < or <<
+            o_mirror = closing_punct_mirror(o_frag)
+            paragraph.add_run(o_mirror)
+
+        elif gdl_node["statusStart"] == 1:
+            # o should already be an opener frag like ( or < or <<
+            paragraph.add_run(o_frag)
+
+        # Partial fragment break start
+        if gdl_node.get("ho", ""):
+            paragraph.add_run("⸢")
+
+    def _add_post_frag_symbols(self, gdl_node, paragraph):
+        """Adds any symbols that come after the actual text fragment.
+        These chars may be added: ? ⸣ > >>
+        Args:
+            gdl_node (dict): dict of L(emma) node's "gdl" property
+            paragraph (docx.text.paragraph.Paragraph): paragraph to add to
+        """
+        if gdl_node.get("queried", ""):
+            r = paragraph.add_run("?")
+            r.font.superscript = True
+
+        if gdl_node.get("hc", ""):
+            paragraph.add_run("⸣")
+
+        # o for whatever reason may include [ or ], but this is already taken
+        # care of by breakStart and breakEnd. Leave o to just be eg. ( ) < >>
+        o_frag = gdl_node["o"].strip("[]")
+        if gdl_node["statusStart"] == gdl_node["id"]:
+            # o should already be a closer frag like ) or > or >>
+            paragraph.add_run(o_frag)
+
+        if gdl_node.get("breakEnd", ""):
+            pass
 
     def _convert_2_or_3_subscript(self, sign):
         """Converts a sign containing a numerical 2 or 3 subscript to have its
@@ -544,56 +681,18 @@ class JsonParser(object):
                 if char.isupper():
                     accented_char = accented_char.upper()
                 return sign[:-1].replace(char, accented_char, 1)
-        self.print_if_verbose("You shouldn't be here!")
+        print_if_verbose("You shouldn't be here!")
         return sign
 
     def _convert_h(self, sign):
         """Replaces h with ḫ, capital or lowercase. TODO Might not actually need this...
         Args:
-            sign ():
+            sign (str): transliterated sign, eg. ah or HA
         """
         if sign.islower():
             return sign.replace("h", "ḫ")
         else:
             return sign.replace("H", "Ḫ")
-
-    def parse_json(self, cdl_dict, doc):
-        """
-        Walks through the JSON object and pieces together all the lemmas.
-        No formatting yet; no dealing with line breaks or new sections like obverse/reverse.
-
-        dict[cdl] is list
-        dict[cdl][3] (or whatever index) has node == c; start parsing there
-        dict[cdl][3][cdl] contains list of dicts with actual lemmas/line breaks
-        """
-        if not cdl_dict:
-            return
-
-        if cdl_dict["type"] != "cdl":
-            self.print_if_verbose("Not a CDL-type JSON!\n")
-            return
-
-        nodes = cdl_dict["cdl"]
-        for c_node in nodes:
-            chunk = c_node
-            res = self.traverse_c_node(chunk, doc)
-
-    def save_docx(self, path, doc):
-        """Attempt to save the resulting docx file to current directory.
-        Args:
-            path (str): Relative or absolute path to original JSON file
-            doc (docx.Document): fully assembled docx object to be saved
-        """
-        try:
-            name = os.path.basename(path).split(".json")[0]
-            doc.save(name + ".docx")
-            self.print_if_verbose("Saved doc as {0}.docx".format(name))
-        except Exception as e:
-            self.print_if_verbose("Couldn't save docx! {0}".format(e))
-
-    def print_if_verbose(self, msg):
-        if self.verbose:
-            print(msg)
 
 
 class HtmlParser(object):
@@ -617,12 +716,17 @@ def main():
     parser = argparse.ArgumentParser(description='Parse your shit here.')
     parser.add_argument('--file', '-f', required=True,
                         help='A path (file or directory) to the JSON file to parse into DOCX')
-    parser.add_argument('--verbose', '-v', required=False, default=True, action="store_true",
+    parser.add_argument('--verbose', '-v', required=False, default=False, action="store_true",
                         help='Enable verbose mode during parsing')
     args = parser.parse_args()
 
-    jp = JsonParser(args.file, args.verbose)
-    jp.run()
+    if args.verbose:
+        VERBOSE_FLAG = True
+
+    jl = JsonLoader(args.file)
+    for json_dict in jl.get_json_dicts():
+        jp = JsonParser(json_dict)
+        jp.run()
 
 
 if __name__ == "__main__":
