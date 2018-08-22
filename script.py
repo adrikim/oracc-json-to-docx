@@ -9,9 +9,10 @@ import argparse
 from pprint import pprint
 
 from docx import Document
+#from bs4 import BeautifulSoup
 
 """
-Parses one or more JSON files and outputs a well-formatted DOC(X) file.
+Parses one or more JSON files and outputs well-formatted DOC(X) file(s).
 
 Types of nodes:
 c(hunk): chunk of text; may be the entire text, a sentence/unit, clause, phrase, etc...
@@ -59,11 +60,12 @@ def print_if_verbose(msg):
 class JsonLoader(object):
     """
     Class to read from a filename/pathname containing one or more JSON files
-    and make accessible a list of dicts.
+    and make accessible a list of dicts (one per JSON/exemplar).
     """
-    def __init__(self, original_path):
+    def __init__(self, original_path, use_exemplar):
         print_if_verbose("Using encoding {0}".format(sys.stdout.encoding)) # cp1252; can't process some UTF-8 stuff because windoze :(
 
+        self.use_exemplar = use_exemplar
         self.json_paths = self._get_file_paths(original_path)
         self.json_dicts = self._load_json_dicts()
 
@@ -90,7 +92,8 @@ class JsonLoader(object):
 
     def _load_json_dicts(self):
         """Loads one or more ORACC JSON files into one or more python dicts.
-        If a JSON file is unable to be read, its corresponding dict will be empty.
+        If a JSON file is unable to be read, its corresponding dict will be empty,
+        save for its original path.
         Returns:
             list (dict): loaded from the raw JSON files
         """
@@ -100,14 +103,37 @@ class JsonLoader(object):
                 with open(json_path, encoding="utf_8_sig") as fd:
                     raw_str = fd.read()
                     json_dict = json.loads(raw_str)
+
+                    json_dict["original_path"] = json_path
+                    # TODO set text name here- textid OR exemplar
+                    if self.use_exemplar:
+                        json_dict["docx_name"]
+
                     json_dicts.append(json_dict)
             except Exception as e:
                 print("Could not load {0} to dict: {1}".format(json_path, e))
-                json_dicts.append({})
+                json_dicts.append({
+                    "original_path": json_path,
+                })
         return json_dicts
 
     def get_json_dicts(self):
         return self.json_dicts # TODO make this into property
+
+    def get_exemplar_name(self, textid, json_path):
+        """Find the exemplar name for the given ORACC JSON. Will be used
+        to name the final docx.
+        """
+        # walk to ../catalogue.json[members][textid][exemplars] for name TODO
+        try:
+            self._read_json_dict(json_path)
+        except Exception as e:
+            print()
+
+    def _read_json_dict(self, filename):
+        with open(filename) as fd:
+            raw_str = fd.read()
+            return json.loads(raw_str)
 
 
 class JsonParser(object):
@@ -124,7 +150,8 @@ class JsonParser(object):
         """
         textid = self.cdl_dict.get("textid", "")
         if not textid:
-            print("Skipping this mystery gang!")
+            print_if_verbose("Skipping malformed JSON from {0}:".format(self.cdl_dict["original_path"]))
+            print_if_verbose(self.cdl_dict)
             return
         print_if_verbose(
             "Parsing textid {0} from project {1}".format(textid, self.cdl_dict["project"])
@@ -136,7 +163,7 @@ class JsonParser(object):
 
     def parse_json(self, doc):
         """Walks through the JSON object and pieces together all the lemmas.
-        No new sections like obverse/reverse yet.
+        No new sections like obverse/reverse yet. TODO complete docstring
 
         dict[cdl] is list
         dict[cdl][3] (or whatever index) has node == c; start parsing there
@@ -146,7 +173,7 @@ class JsonParser(object):
             return
 
         if self.cdl_dict["type"] != "cdl":
-            print_if_verbose("Not a CDL-type JSON!\n")
+            print("Not a CDL-type JSON!\n")
             return
 
         nodes = self.cdl_dict["cdl"]
@@ -165,9 +192,9 @@ class JsonParser(object):
         try:
             name = textid + ".docx"
             doc.save(name)
-            print_if_verbose("Saved doc as {0}".format(name))
+            print("Saved doc as {0}".format(name))
         except Exception as e:
-            print_if_verbose("Couldn't save docx! {0}".format(e))
+            print("Couldn't save docx! {0}".format(e))
 
     def print_doc(self, doc):
         """Utility function to print resulting fully assembled text to console.
@@ -193,13 +220,13 @@ class JsonParser(object):
                     partial_left_brackets += 1
                 elif "⸣" in r.text:
                     partial_right_brackets += 1
-            print(s)
+            print_if_verbose(s)
 
         # Seeing if we're balanced or not
-        print("[ count: {0}".format(full_left_brackets))
-        print("] count: {0}".format(full_right_brackets))
-        print("⸢ count: {0}".format(partial_left_brackets))
-        print("⸣ count: {0}".format(partial_left_brackets))
+        print_if_verbose("[ count: {0}".format(full_left_brackets))
+        print_if_verbose("] count: {0}".format(full_right_brackets))
+        print_if_verbose("⸢ count: {0}".format(partial_left_brackets))
+        print_if_verbose("⸣ count: {0}".format(partial_left_brackets))
         assert(full_left_brackets == full_right_brackets)
         assert(partial_left_brackets == partial_right_brackets)
 
@@ -702,13 +729,15 @@ def main():
                         help='A path (file or directory) to the JSON file to parse into DOCX')
     parser.add_argument('--verbose', '-v', required=False, action="store_true",
                         help='Enable verbose mode during parsing')
+    parser.add_argument('--use-exemplar', '-X', required=False, action="store_true",
+                        help='Enable use of exemplar name for final output instead of Q or P-number')
     args = parser.parse_args()
 
     if args.verbose:
         global VERBOSE_FLAG
         VERBOSE_FLAG = True
 
-    jl = JsonLoader(args.file)
+    jl = JsonLoader(args.file, args.use_exemplar)
     for json_dict in jl.get_json_dicts():
         jp = JsonParser(json_dict)
         jp.run()
