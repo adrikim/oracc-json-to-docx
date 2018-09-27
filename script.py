@@ -66,6 +66,7 @@ class JsonLoader(object):
         print_if_verbose("Using encoding {0}".format(sys.stdout.encoding)) # cp1252; can't process some UTF-8 stuff because windoze :(
 
         self.use_exemplar = use_exemplar
+        self.catalogue_dict = None
         self.json_paths = self._get_file_paths(original_path)
         self.json_dicts = self._load_json_dicts()
 
@@ -74,7 +75,7 @@ class JsonLoader(object):
         in a directory will result in a list of all JSONs in that directory.
         Args:
             original_path (str): Relative or absolute path to either one
-                JSON file or a directory
+                JSON file or a directory of JSON files
         Returns:
             list: List of one or more path strings to JSON files
         Raises:
@@ -105,9 +106,16 @@ class JsonLoader(object):
                     json_dict = json.loads(raw_str)
 
                     json_dict["original_path"] = json_path
-                    # TODO set text name here- textid OR exemplar
-                    if self.use_exemplar:
-                        json_dict["docx_name"]
+
+                    #if self.use_exemplar:
+                        #json_dict["docx_name"] = self.get_exemplar_name(json_path) # TODO put exemplar name at top of docx instead when imported
+                    #else:
+                        #json_dict["docx_name"] = os.path.basename(json_path).split(".json")[0]
+
+                    # TODO: this is temporary
+                    json_dict["exemplars"] = self.get_exemplar_name(json_path)
+                    # TODO end temporary
+                    json_dict["docx_name"] = os.path.basename(json_path).split(".json")[0]
 
                     json_dicts.append(json_dict)
             except Exception as e:
@@ -120,15 +128,46 @@ class JsonLoader(object):
     def get_json_dicts(self):
         return self.json_dicts # TODO make this into property
 
-    def get_exemplar_name(self, textid, json_path):
-        """Find the exemplar name for the given ORACC JSON. Will be used
-        to name the final docx.
+    def get_exemplar_name(self, json_path):
+        """Find the exemplar sources string for the given ORACC JSON using its ../catalogue.json.
+        Will be used to name the final docx.
+
+        Eg. for rinap/rinap1/catalogue.json, text Q003414 has exemplars
+            ZhArchSlg 1917 (+) ZhArchSlg 1918 (+) NA 12/76. The resulting DOCX
+            for Q003414.json would then be
+            "ZhArchSlg 1917 (+) ZhArchSlg 1918 (+) NA 12/76.docx"
         """
-        # walk to ../catalogue.json[members][textid][exemplars] for name TODO
+        if not self.catalogue_dict:
+            print_if_verbose("Initializing catalogue dict")
+            self._set_catalogue_json(json_path)
+
         try:
-            self._read_json_dict(json_path)
+            q_number = os.path.basename(json_path).split(".json")[0]
+            exemplar_name = self.catalogue_dict["members"][q_number]["exemplars"]
+
+            # TODO: ignoring this for now
+            # if "/" in exemplar_name:
+            #     print("Exemplar name for textid {0} contains slash, escaping to || to avoid filesystem freakout".format(q_number))
+            #     exemplar_name = exemplar_name.replace("/", "||")
+
+            # if len(exemplar_name) > 240:
+            #     print("Exemplar name for textid {0} is too long, truncating".format(q_number))
+            #     exemplar_name = exemplar_name[:240] # 255 - 5 because of .docx in filename. Could still be too long for whole path tho :(
+            # end TODO
+
+            return exemplar_name
         except Exception as e:
-            print()
+            print("Unable to find exemplars for Q-number {0}. Reverting name to use Q-number.".format(q_number))
+            return q_number
+
+    def _set_catalogue_json(self, json_path):
+        """Sets self.catalogue_dict by reading from json_path/../catalogue.json.
+        """
+        try:
+            catalogue_path = os.path.join(os.path.dirname(json_path), "..", "catalogue.json")
+            self.catalogue_dict = self._read_json_dict(catalogue_path)
+        except Exception as e:
+            print("Unable to find catalogue.json at {0}.".format(catalogue_path))
 
     def _read_json_dict(self, filename):
         with open(filename) as fd:
@@ -140,8 +179,9 @@ class JsonParser(object):
     """
     Class to take in a local JSON file and output a docx.
     """
-    def __init__(self, json_dict):
+    def __init__(self, json_dict, output_directory):
         self.cdl_dict = json_dict
+        self.output_directory = output_directory
         self.l_reflist = [] # for repeat nodes
 
     def run(self):
@@ -159,7 +199,7 @@ class JsonParser(object):
         doc = Document()
         res = self.parse_json(doc)
         self.print_doc(doc)
-        self.save_docx(textid, doc)
+        self.save_docx(doc)
 
     def parse_json(self, doc):
         """Walks through the JSON object and pieces together all the lemmas.
@@ -176,25 +216,49 @@ class JsonParser(object):
             print("Not a CDL-type JSON!\n")
             return
 
+        # TODO: temporary
+        p = doc.add_paragraph()
+        p.add_run(self.cdl_dict["exemplars"])
+        doc.add_paragraph()
+        # end TODO
+
         nodes = self.cdl_dict["cdl"]
         for c_node in nodes:
             chunk = c_node
             res = self.traverse_c_node(chunk, doc)
 
-    def save_docx(self, textid, doc):
+    def save_docx(self, doc):
         """Attempt to save the resulting docx file to current directory where
-        script originally ran.
+        script originally ran. Resulting docx will either be named after its
+        Q-number textid or its exemplar sources.
         Args:
-            textid (str): ID of original JSON dict; basis of save name
+            #textid (str): ID of original JSON dict; basis of save name
                 (eg. Q003456 -> Q003456.docx)
             doc (docx.Document): fully assembled docx object to be saved
         """
         try:
-            name = textid + ".docx"
-            doc.save(name)
-            print("Saved doc as {0}".format(name))
+            docx_name = self._get_docx_name_to_save(self.cdl_dict["docx_name"]) + ".docx"
+            docx_path = os.path.join(self.output_directory, docx_name)
+            doc.save(docx_path)
+            print("Saved docx in {0}".format(docx_path))
         except Exception as e:
             print("Couldn't save docx! {0}".format(e))
+
+    def _get_docx_name_to_save(self, name):
+        """Check if docx_name would be unique before saving. If not, append the appropriate
+        number identifier. eg. "My Exemplar Name" -> "My Exemplar Name (1)", assuming
+        "My Exemplar Name" exists.
+        """
+        number_id = 0
+        original_name = name
+        docx_name = name
+
+        while True:
+            if not os.path.exists(docx_name + ".docx"):
+                return docx_name
+            print("{0} exists, continuing".format(docx_name))
+            number_id += 1
+            docx_name = original_name + " ({0})".format(number_id)
 
     def print_doc(self, doc):
         """Utility function to print resulting fully assembled text to console.
@@ -227,8 +291,8 @@ class JsonParser(object):
         print_if_verbose("] count: {0}".format(full_right_brackets))
         print_if_verbose("⸢ count: {0}".format(partial_left_brackets))
         print_if_verbose("⸣ count: {0}".format(partial_left_brackets))
-        assert(full_left_brackets == full_right_brackets)
-        assert(partial_left_brackets == partial_right_brackets)
+        #assert(full_left_brackets == full_right_brackets) # TODO restore
+        #assert(partial_left_brackets == partial_right_brackets) # TODO restore
 
     def traverse_c_node(self, c_dict, doc):
         """Decides what to do for each of the nodes in a c-node's node list.
@@ -441,7 +505,7 @@ class JsonParser(object):
         self._add_pre_frag_symbols(gdl_node, paragraph)
 
         # Actual sign/word fragment
-        word = self._convert_h(self._convert_2_or_3_subscript(gdl_node["v"]))
+        word = self._convert_2_or_3_subscript(gdl_node["v"])
         r = paragraph.add_run(word)
         if word.islower():
             r.italic = True
@@ -482,7 +546,7 @@ class JsonParser(object):
 
             # Add the determinative to paragraph with needed stylings
             det = det_node.get("s", det_node.get("v", ""))
-            det = self._convert_h(self._convert_2_or_3_subscript(det))
+            det = self._convert_2_or_3_subscript(det)
             r = paragraph.add_run(det)
             r.font.superscript = True
             print_if_verbose("Added determinative {0}".format(det))
@@ -522,7 +586,7 @@ class JsonParser(object):
         self._add_pre_frag_symbols(gdl_node, paragraph)
 
         # Add actual logogram
-        logogram = self._convert_h(self._convert_2_or_3_subscript(gdl_node["s"]))
+        logogram = self._convert_2_or_3_subscript(gdl_node["s"])
         paragraph.add_run(logogram)
         print_if_verbose("Added logogram {0}".format(logogram))
 
@@ -640,8 +704,8 @@ class JsonParser(object):
         """
         # Unknown/uncertain sign
         if gdl_node.get("queried", ""):
-            r = paragraph.add_run("?")
-            r.font.superscript = True
+            r = paragraph.add_run("(?)")
+            #r.font.superscript = True
 
         # Partial fragment break end
         if gdl_node.get("hc", ""):
@@ -706,6 +770,7 @@ class JsonParser(object):
             return sign.replace("H", "Ḫ")
 
 
+
 class HtmlParser(object):
     """
     Class to take in a (local or remote) HTML file from XXXX
@@ -724,13 +789,15 @@ def main():
     json: [--file /path/to/json] [--directory /path (. by default)]
     html: [--file /path/to/html] [--]
     """
-    parser = argparse.ArgumentParser(description='Parse your shit here.')
+    parser = argparse.ArgumentParser(description='Parse your JSON here.')
     parser.add_argument('--file', '-f', required=True,
                         help='A path (file or directory) to the JSON file to parse into DOCX')
     parser.add_argument('--verbose', '-v', required=False, action="store_true",
                         help='Enable verbose mode during parsing')
-    parser.add_argument('--use-exemplar', '-X', required=False, action="store_true",
-                        help='Enable use of exemplar name for final output instead of Q or P-number')
+    parser.add_argument('--use-exemplar', '-x', required=False, action="store_true",
+                        help='Enable use of exemplar sources/citations as the name for final output instead of Q or P-number')
+    parser.add_argument('--output-directory', '-o', required=False, action="store", default=".",
+                        help="Specify directory to output result(s) to. This script will output to the current directory by default.")
     args = parser.parse_args()
 
     if args.verbose:
@@ -739,7 +806,7 @@ def main():
 
     jl = JsonLoader(args.file, args.use_exemplar)
     for json_dict in jl.get_json_dicts():
-        jp = JsonParser(json_dict)
+        jp = JsonParser(json_dict, args.output_directory)
         jp.run()
 
 
