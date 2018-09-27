@@ -120,6 +120,7 @@ class JsonLoader(object):
                     json_dicts.append(json_dict)
             except Exception as e:
                 print("Could not load {0} to dict: {1}".format(json_path, e))
+                print("If this is an encoding error, check that the venv is based on py3, not py2")
                 json_dicts.append({
                     "original_path": json_path,
                 })
@@ -182,7 +183,9 @@ class JsonParser(object):
     def __init__(self, json_dict, output_directory):
         self.cdl_dict = json_dict
         self.output_directory = output_directory
-        self.l_reflist = [] # for repeat nodes
+        self.l_reflist = []  # for repeat nodes
+        self.traversed_first_c_sentence_node = False  # TODO don't need this anymore if we're not using c-labels
+        self.found_obverse_or_reverse_d_node = False  # trigger on first type=discourse c-node?
 
     def run(self):
         """Loads and parses given ORACC JSON, then saves the pieced-together
@@ -216,11 +219,10 @@ class JsonParser(object):
             print("Not a CDL-type JSON!\n")
             return
 
-        # TODO: temporary
+        # NOTE: was temporary, but now it'll stay
+        # Add full exemplar name to the very top of docx
         p = doc.add_paragraph()
         p.add_run(self.cdl_dict["exemplars"])
-        doc.add_paragraph()
-        # end TODO
 
         nodes = self.cdl_dict["cdl"]
         for c_node in nodes:
@@ -291,10 +293,10 @@ class JsonParser(object):
         print_if_verbose("] count: {0}".format(full_right_brackets))
         print_if_verbose("⸢ count: {0}".format(partial_left_brackets))
         print_if_verbose("⸣ count: {0}".format(partial_left_brackets))
-        #assert(full_left_brackets == full_right_brackets) # TODO restore
-        #assert(partial_left_brackets == partial_right_brackets) # TODO restore
+        #assert(full_left_brackets == full_right_brackets) # TODO restore if you remove exemplar name
+        #assert(partial_left_brackets == partial_right_brackets) # TODO ditto
 
-    def traverse_c_node(self, c_dict, doc):
+    def traverse_c_node(self, c_dict, doc, first_c_node=False):
         """Decides what to do for each of the nodes in a c-node's node list.
         Will further traverse down a C(hunk), D(iscontinuity), or L(emma)
         node as needed.
@@ -311,9 +313,30 @@ class JsonParser(object):
 
         print_if_verbose("At c-node {0}".format(c_dict["id"]))
 
+        # NOTE: If C node has a label, do we put it in? But it can be there if there's also
+        # D-nodes already with eg. "Obverse"
+        # if c_dict["type"] == "sentence" and "label" in c_dict:
+        #     print_if_verbose("Looks like a sentence with a label, {0}".format(c_dict["label"]))
+        #     if not self.traversed_first_c_sentence_node:
+        #         print_if_verbose("Traversed my first C-node sentence!")
+        #         self.traversed_first_c_sentence_node = True
+        #     else:
+        #         doc.add_paragraph()  # means this is after the first time, so extra newline needed
+        #     p = doc.add_paragraph()
+        #     p.add_run(c_dict["label"])
+
+        # If we've reached the point of starting the actual text, ie. no D-nodes
+        # with "obverse" or "reverse" have been encountered so far, we still need
+        # some header, so we put in "Text"
+        if c_dict["type"] == "discourse":
+            if not self.found_obverse_or_reverse_d_node:
+                p = doc.add_paragraph()
+                p.add_run("Text\n")
+                self.found_obverse_or_reverse_d_node = True
+
         for node in c_dict["cdl"]:
             if node["node"] == "c":
-                self.traverse_c_node(node, doc)
+                self.traverse_c_node(node, doc, first_c_node=False)
             elif node["node"] == "d":
                 self.parse_d_node(node, doc)
             elif node["node"] == "l":
@@ -337,18 +360,30 @@ class JsonParser(object):
         d_type = d_dict["type"]
 
         if d_type == "line-start":
-            doc.add_paragraph()
-            #p.add_run(d_dict.get("label", "") + " ") # XXX don't know if I need this
+            # If there was eg. a lacuna before, don't insert a newline.
+            # We want to keep a text flowing so that there's no empty lines
+            # aside from before things like "Reverse"
+            try:
+                if not doc.paragraphs[-1].runs[-1].text:
+                    print_if_verbose("Last line was empty, skipping line-start")
+                    p = doc.add_paragraph()
+            except Exception as e:
+                print("Couldn't get last run before this line-start: {0}".format(e))
+            # NOTE: disabled below since this was adding eg. custom line numbers that OCHRE won't be able to parse
+            # Seems like custom header labels should come from C-nodes...? If at all?
+            #p.add_run(d_dict.get("label", ""))  # eg. Inscription_A 1 in rinap4/Q003347
 
         elif d_type == "obverse":
             p = doc.add_paragraph()
-            p.add_run("Obverse")
-            doc.add_paragraph()
+            p.add_run("Obverse\n")
+            self.found_obverse_or_reverse_d_node = True
 
         elif d_type == "reverse":
-            p = doc.add_paragraph()
-            p.add_run("Reverse")
+            # Needs extra newline before it, unlike obverse, since it comes later on in texts
             doc.add_paragraph()
+            p = doc.add_paragraph()
+            p.add_run("Reverse\n")
+            self.found_obverse_or_reverse_d_node = True
 
         elif d_type == "punct":
             p = doc.paragraphs[-1]
@@ -416,22 +451,33 @@ class JsonParser(object):
             print_if_verbose("Adding Aramaic fragment")
             self._add_aramaic_frag(l_dict, last_paragraph)
             return
-        elif lang == "qcu-949": # seemingly English...
+        elif lang == "qcu-949":  # seemingly English...
             print_if_verbose("Adding English fragment")
             self._add_english_frag(l_dict, last_paragraph)
             return
-        elif lang != "akk": # eg. sux for Sumerian
+        elif lang != "akk":  # eg. sux for Sumerian
             print_if_verbose("Unrecognized language {0}".format(lang))
 
         gdl_list = l_dict["f"]["gdl"]
 
-        for node_dict in gdl_list:
+        for index in range(len(gdl_list)):
+            node_dict = gdl_list[index]
             if "s" in node_dict:
                 self._add_logogram(node_dict, last_paragraph)
             elif "v" in node_dict:
                 self._add_continuing_sign_form(node_dict, last_paragraph)
             elif "det" in node_dict:
-                self._add_determinative(node_dict, last_paragraph)
+                # NOTE: if there's 2 determinatives stuck next to each other,
+                # need to separate them with space or something else
+                # since OCHRE will otherwise attempt to look up
+                # eg. "md" instead of "m" and "d" dets separately
+                try:
+                    if "det" in gdl_list[index + 1]:
+                        self._add_determinative(node_dict, last_paragraph, add_space_delim=True)
+                    else:
+                        self._add_determinative(node_dict, last_paragraph)
+                except Exception as e:
+                    print("Looks like a single determinative, not 2 stuck together! Exception: {0}".format(e))
             elif "gg" in node_dict:
                 self._add_logogram_cluster(node_dict, last_paragraph)
             elif "x" in node_dict:
@@ -513,7 +559,7 @@ class JsonParser(object):
 
         self._add_post_frag_symbols(gdl_node, paragraph)
 
-    def _add_determinative(self, gdl_node, paragraph):
+    def _add_determinative(self, gdl_node, paragraph, add_space_delim=False):
         """Adds determinative to given paragraph and adds necessary styling.
         Example of a node that this would work on (from rinap/rinap1/corpusjson/Q003414.json):
         {
@@ -552,6 +598,10 @@ class JsonParser(object):
             print_if_verbose("Added determinative {0}".format(det))
 
             self._add_post_frag_symbols(det_node, paragraph)
+            if add_space_delim:  # if there's another det right after this
+                r = paragraph.add_run(".")  # TODO use . or space? Space looked a bit weird, so let's try .
+                r.font.superscript = True
+                print_if_verbose("Added extra . delim for double determinative")
         else:
             print_if_verbose("Unknown determinative position {0}".format(gdl_node["pos"]))
 
@@ -760,7 +810,8 @@ class JsonParser(object):
         return sign
 
     def _convert_h(self, sign):
-        """Replaces h with ḫ, capital or lowercase. TODO Might not actually need this...
+        """Replaces h with ḫ, capital or lowercase.
+        NOTE You don't need this, since OCHRE can auto sub in rocker-h for regular h
         Args:
             sign (str): transliterated sign, eg. ah or HA
         """
