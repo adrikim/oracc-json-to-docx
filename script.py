@@ -23,9 +23,9 @@ d(iscontinuity): line break, surface transition, or damage
 closing_punct_mirror = {
     "]": "[",
     ")": "(",
-    ">": "<",
-    ">>": "<<",
-    ")>": "<(",
+    "›": "‹",
+    "»": "«",
+    ")›": "‹(",
 }
 
 # Used to transform eg. a2 to á in the final result docx.
@@ -331,7 +331,8 @@ class JsonParser(object):
         if c_dict["type"] == "discourse":
             if not self.found_obverse_or_reverse_d_node:
                 p = doc.add_paragraph()
-                p.add_run("Text\n")
+                p.add_run("Text")
+                doc.add_paragraph()
                 self.found_obverse_or_reverse_d_node = True
 
         for node in c_dict["cdl"]:
@@ -350,6 +351,7 @@ class JsonParser(object):
           - line-start
           - obverse
           - reverse
+          - excised
           - object
           - surface
           - tablet
@@ -375,14 +377,16 @@ class JsonParser(object):
 
         elif d_type == "obverse":
             p = doc.add_paragraph()
-            p.add_run("Obverse\n")
+            p.add_run("Obverse")
+            doc.add_paragraph()
             self.found_obverse_or_reverse_d_node = True
 
         elif d_type == "reverse":
             # Needs extra newline before it, unlike obverse, since it comes later on in texts
             doc.add_paragraph()
             p = doc.add_paragraph()
-            p.add_run("Reverse\n")
+            p.add_run("Reverse")
+            doc.add_paragraph()
             self.found_obverse_or_reverse_d_node = True
 
         elif d_type == "punct":
@@ -390,8 +394,33 @@ class JsonParser(object):
             p.add_run(d_dict["frag"])
             p.add_run(d_dict.get("delim", ""))
 
+        # Fuck this bit
+        # Shitty sidestep for now: if starts with uppercase, assume logogram/non-italics (it's fine for rinap mostly)
+        # If starts with lowercase, assume akkadian/italics
+        elif d_type == "excised" and "frag" in d_dict: # TODO wip, can't do subscript/superscript convert, italics... need to parse per char
+            self._add_excised_d_node(d_dict, doc)
+
         else:
             print_if_verbose("Unknown or noop d-value {0}".format(d_type))
+
+    def _add_excised_d_node(self, d_dict, doc):
+        """TODO Fuck this bit. Sidestepping for now (soln for which should work for now with RINAP):
+        if first non-<</>> char is uppercase, assume entire blob Sumerian/logogram/non-italics
+        If first non-<</>> char is lowercase, assume entire blob Akkadian/phonogram/italics
+        Won't work with stuff in eg. SAAO/SAA16 CAMS that may have eg. [<<BU>>], <<BU>>], or {<<d}60. Fuck you CAMS/SAAO.
+        Ideally, you'd tokenize everything in the middle of the <</>>'s and make them into eg. gdl_dicts
+        to pass off to functions like _add_continuing_sign_form().
+        """
+        frag = d_dict["frag"].replace("<<", "«").replace("<", "‹").replace(">>", "»").replace(">", "›")
+        #frag = self._convert_2_or_3_subscript(frag)
+        stripped_frag = frag.strip("«").strip("»").strip("[")
+        p = doc.add_paragraph()
+        r = p.add_run(frag)
+
+        if stripped_frag[0].islower(): # Seems like entire actual char portion of frag is Akkadian, make it all italic
+            r.italic = True
+
+        p.add_run(frag + d_dict["delim"])
 
     def parse_l_node(self, l_dict, doc):
         """Gets L(emma) node text, formats it, and adds it to the last paragraph of doc.
@@ -734,6 +763,7 @@ class JsonParser(object):
         o_frag = gdl_node.get("o", "").strip("[]")
         if "id" in gdl_node and gdl_node.get("statusStart", "") == gdl_node["id"]:
             # o needs to be mirrored first to be an opener frag like ( or < or <<
+            o_frag = o_frag.replace("<<", "«").replace("<", "‹").replace(">>", "»").replace(">", "›") # NOTE new
             o_mirror = closing_punct_mirror[o_frag]
             paragraph.add_run(o_mirror)
 
@@ -766,6 +796,7 @@ class JsonParser(object):
         o_frag = gdl_node.get("o", "").strip("[]")
         if "id" in gdl_node and gdl_node.get("statusStart", "") == gdl_node["id"]:
             # o should already be a closer frag like ) or > or >>
+            o_frag = o_frag.replace("<<", "«").replace("<", "‹").replace(">>", "»").replace(">", "›") # NOTE new
             paragraph.add_run(o_frag)
 
         # Full fragment break end
