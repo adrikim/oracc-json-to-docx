@@ -6,10 +6,10 @@ import sys
 import json
 import glob
 import argparse
-from pprint import pprint
 
+import requests
 from docx import Document
-#from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup
 
 """
 Parses one or more JSON files and outputs well-formatted DOC(X) file(s).
@@ -852,15 +852,134 @@ class JsonParser(object):
             return sign.replace("H", "Ḫ")
 
 
-
 class HtmlParser(object):
     """
-    Class to take in a (local or remote) HTML file from XXXX
-    and output an XXX.
+    Class to take in a remote link to an ORACC HTML text and output a well-formatted docx.
+    Not recommended for RINAP because its superscript Sumerian signs are
+    not tagged with <sup> at all.
 
-    eg. http://oracc.museum.upenn.edu/rinap/rinap1/Q003414/html
+    TODO: add functionality to take in offline/local HTML file as well?
     """
-    def __init__(self, *args, **kwargs):
+    def __init__(self, url, catalogue_path):
+        self.original_url = url
+        self.catalogue_path = catalogue_path
+
+        self.q_number = self._get_q_number()
+        self.html_text = requests.get(url).content # TODO give this its own function later for extra checks for right URL
+        self.catalogue_dict = self._load_catalogue(catalogue_path)
+
+    def _get_q_number(self):
+        """Get the Q-number of the text referred to by the original URL.
+        Returns:
+            q_number (str)
+        """
+        url = self.original_url.strip("/")
+        q_number = url.split("/")[-1]
+        assert("Q" in q_number)
+        return q_number
+
+    def _load_catalogue(self):
+        """Get catalogue info such as shorthand name and sources list from the JSON
+        catalogue passed in for the given Q-number.
+        Important keys:
+        - display_name
+        - exemplars
+        - collection (in case exemplars have no museum #)
+        - designation/primary_publication (shorthand names in ORACC, put after display_name)
+        """
+        catalogue_dict = {}
+
+        try:
+            with open(self.catalogue_path, encoding="utf_8_sig") as fd:
+                raw_str = fd.read()
+                catalogue_dict = json.loads(raw_str)
+        except Exception as e:
+            raise e("Catalogue at {0} not found or unreadable: {1}".format(self.catalogue_path, e))
+
+        try:
+            catalogue_dict = catalogue_dict["members"][self.q_number]
+        except IndexError as e:
+            raise e("Q-number {0} not found in {1}! Did you pick the correct catalogue path?".format(self.q_number, self.catalogue_path))
+
+        return catalogue_dict
+
+    def scrape_page(self):
+        """Gets the contents of a given ORACC text URL, eg. http://oracc.museum.upenn.edu/rinap/rinap1/Q003414/html
+        and returns it in formatted docx form.
+        Returns:
+            docx.Document: docx file containing properly formatted text
+        """
+        doc = Document()
+        soup = BeautifulSoup(self.html_text, "html.parser")
+        # Preface with name, sources
+        # Find all headers
+        # Find all text underneath
+        soup.find_all("div", class_="")  # TODO
+        # ^The most parent node is a tabel with class "transliteration"
+        #   1) tr with class eg. "l p2"
+        # Drill into a tr with id="" class="h surface";
+        #   get span with class="h2 " contents to get eg. Obverse
+        # For each tr with class "l" and has id eg. Q003803.1;
+        #   go to td with class "lnum ";
+        #     and span with class "lnum " or "xlabel " contents are line number, eg. 1
+        #   go to td with class "tlit";
+        #     every span with class "w *" is a word with a space after it;
+        #       get whatever stuff precedes the below 3 (eg. ( 30- ) right below a with class "cbd " directly below the "w " span (this may be the only thing in word-span),
+        #       every span with class "r " contains some ... ] thing
+        #       every span with class "sign sux " contains a Sumerian word
+        #       every span with class "akk " contains an Akkadian sign
+        #       every sup with class " " or "sux " (used for ? ! superscript) or "akk " (is then in italics) contains a superscript. This can contain further sups TODO: what about *?
+        #       every span with class "compound " contains spans with class "sign " whose contents can be added along with anything before/after them
+        #       and get whatever stuff (eg. - . 30- ⸢ -⸣) following any of the above 3
+        #   Skip English sections in a td with class eg. "t1 xtr" if any;
+
+    def _add_sumerian_sign(self, html_class, html_text, paragraph):
+        """Add a span with class "sign sux ".
+        Convert all ng to ^g.
+        If there's another sumerian sign right after this, . as separator as default.
+        Most come capitalized already, some are not though. Autocorrect or add as-is?
+        """
+        pass
+
+    def _add_superscript(self, html_class, html_text, paragraph):
+        """Add a sup with class " ".
+        Convert all ng to ^g.
+        If there's another superscript right after this, . separator as default? (If any separator, it could be bundled with actual contents of sup, not after sup)
+        """
+        pass
+
+    def _add_akkadian_sign(self, html_class, html_text, paragraph):
+        """Add a span with class "akk ".
+        Comes after an a with class "cbd " that can be ignored.
+        Convert all ng to ^g.
+        """
+        pass
+
+    def _add_pre_span_chars(self, text, paragraph):
+        """Add whatever's in between each word-span's a with class "cbd "
+        and the first span (one of 3 types) underneath said a. Convert all <,
+        >, <<, >> to their Unicode counterparts.
+        """
+        pass
+
+    def save_docx(self, docx, save_path=None):
+        """Save docx to specified location. If none is specified, save to current directory
+        under the name of the text's shorthand name, eg. "RINAP 4 029.docx".
+        Args:
+            docx (docx.Document): transliterated and formatted docx file to be saved
+            save_path (str): Path to the directory in which this docx file will be saved.
+        """
+        if not save_path:
+            save_path = os.getcwd()
+        if not os.path.isdir(save_path):
+            print("Specified save path {0} is not a directory, saving file in current directory instead".format(save_path))
+            save_path = os.getcwd()  # TODO not the most obvious... better to try a directory below if existing?
+
+    def get_docx_title(self, docx):
+        """Get the name to save the current docx as.
+        TODO where would I get it from online without resorting to the ORACC JSONs? The saving functionality should be
+        contained with another object, not implemented tbh
+        """
         pass
 
 
