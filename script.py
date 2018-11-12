@@ -9,6 +9,7 @@ import argparse
 
 import requests
 from docx import Document
+import bs4
 from bs4 import BeautifulSoup
 
 """
@@ -62,13 +63,13 @@ class JsonLoader(object):
     Class to read from a filename/pathname containing one or more JSON files
     and make accessible a list of dicts (one per JSON/exemplar).
     """
-    def __init__(self, original_path, use_exemplar):
+    def __init__(self, original_path):
         print_if_verbose("Using encoding {0}".format(sys.stdout.encoding)) # cp1252; can't process some UTF-8 stuff because windoze :(
 
-        self.use_exemplar = use_exemplar
         self.catalogue_dict = None
         self.json_paths = self._get_file_paths(original_path)
         self.json_dicts = self._load_json_dicts()
+        self.q_number = os.path.basename(original_path).split(".json")[0]
 
     def _get_file_paths(self, original_path):
         """Returns a list of one or more ORACC JSON files to read. Passing
@@ -104,18 +105,40 @@ class JsonLoader(object):
                 with open(json_path, encoding="utf_8_sig") as fd:
                     raw_str = fd.read()
                     json_dict = json.loads(raw_str)
+                    q_number = json_dict["textid"] # aka. CDLI number
+
+                    if not self.catalogue_dict:
+                        self.catalogue_dict = self._get_catalogue_json(json_path)
+
+                    # Add in additional data to JSONs, mostly from their catalog
+                    {'collection': 'Iraq Museum, Baghdad, Iraq',
+                     'designation': 'Unidentified Suhu 1007',
+                     'display_name': 'Suhu Unidentified Suhu 1006',
+                     'museum_no': 'IM 096751',
+                     'popular_name': 'RIMB 2 S.0.0.1006',
+                     'primary_publication': 'Unidentified Suhu 1006'}
 
                     json_dict["original_path"] = json_path
+                    q_catalogue = self.catalogue_dict["members"][q_number]
 
-                    #if self.use_exemplar:
-                        #json_dict["docx_name"] = self.get_exemplar_name(json_path) # TODO put exemplar name at top of docx instead when imported
-                    #else:
-                        #json_dict["docx_name"] = os.path.basename(json_path).split(".json")[0]
+                    json_dict["museum_no"] = q_catalogue.get("museum_no") # seen in SAAO, SUHU
+                    if json_dict["museum_no"] == "IM -": # duds, seen in SAAO
+                        json_dict["museum_no"] = ''
 
-                    # TODO: this is temporary
-                    json_dict["exemplars"] = self.get_exemplar_name(json_path)
-                    # TODO end temporary
-                    json_dict["docx_name"] = os.path.basename(json_path).split(".json")[0]
+                    json_dict["exemplars"] = q_catalogue.get("exemplars") # Seen in RINAP, RIBO
+                    json_dict["collection"] = q_catalogue.get("collection") # same as above; add as supplemental info
+
+                    json_dict["primary_publication"] = q_catalogue["primary_publication"] # eg. Esarhaddon 088, Tiglath-pileser III 01, SAA 19 215,
+
+
+                    if json_dict["museum_no"]:
+                        json_dict["ochre_title"] = json_dict["museum_no"]
+                    else:
+                        json_dict["ochre_title"] = "(PUB) " + json_dict["primary_publication"]
+                    # TODO NOTE idea: have text file with real museum info for RINAP/RIBO lined up with the q-nums. I don't know which is the real publication info anymore
+                    # even just a Q-num textfile + hotkey to prepopulate name of doc can help...
+
+                    json_dict["docx_name"] = q_number
 
                     json_dicts.append(json_dict)
             except Exception as e:
@@ -129,46 +152,15 @@ class JsonLoader(object):
     def get_json_dicts(self):
         return self.json_dicts # TODO make this into property
 
-    def get_exemplar_name(self, json_path):
-        """Find the exemplar sources string for the given ORACC JSON using its ../catalogue.json.
-        Will be used to name the final docx.
-
-        Eg. for rinap/rinap1/catalogue.json, text Q003414 has exemplars
-            ZhArchSlg 1917 (+) ZhArchSlg 1918 (+) NA 12/76. The resulting DOCX
-            for Q003414.json would then be
-            "ZhArchSlg 1917 (+) ZhArchSlg 1918 (+) NA 12/76.docx"
-        """
-        if not self.catalogue_dict:
-            print_if_verbose("Initializing catalogue dict")
-            self._set_catalogue_json(json_path)
-
-        try:
-            q_number = os.path.basename(json_path).split(".json")[0]
-            exemplar_name = self.catalogue_dict["members"][q_number]["exemplars"]
-
-            # TODO: ignoring this for now
-            # if "/" in exemplar_name:
-            #     print("Exemplar name for textid {0} contains slash, escaping to || to avoid filesystem freakout".format(q_number))
-            #     exemplar_name = exemplar_name.replace("/", "||")
-
-            # if len(exemplar_name) > 240:
-            #     print("Exemplar name for textid {0} is too long, truncating".format(q_number))
-            #     exemplar_name = exemplar_name[:240] # 255 - 5 because of .docx in filename. Could still be too long for whole path tho :(
-            # end TODO
-
-            return exemplar_name
-        except Exception as e:
-            print("Unable to find exemplars for Q-number {0}. Reverting name to use Q-number.".format(q_number))
-            return q_number
-
-    def _set_catalogue_json(self, json_path):
-        """Sets self.catalogue_dict by reading from json_path/../catalogue.json.
+    def _get_catalogue_json(self, json_path):
+        """Gets output of reading from json_path/../catalogue.json.
         """
         try:
             catalogue_path = os.path.join(os.path.dirname(json_path), "..", "catalogue.json")
-            self.catalogue_dict = self._read_json_dict(catalogue_path)
+            return self._read_json_dict(catalogue_path)
         except Exception as e:
             print("Unable to find catalogue.json at {0}.".format(catalogue_path))
+            raise e
 
     def _read_json_dict(self, filename):
         with open(filename) as fd:
@@ -186,6 +178,15 @@ class JsonParser(object):
         self.l_reflist = []  # for repeat nodes
         self.traversed_first_c_sentence_node = False  # TODO don't need this anymore if we're not using c-labels
         self.found_obverse_or_reverse_d_node = False  # trigger on first type=discourse c-node?
+
+        self.q_number = json_dict["textid"]
+        self.project = json_dict["project"]
+
+        self.exemplars = json_dict["exemplars"] # extra from JSONReader
+        self.primary_publication = json_dict["primary_publication"] # eg. Esarhaddon 088
+        self.museums = json_dict["collection"] # eg. British Museum, London, UK
+
+        self.soup = None
 
     def run(self):
         """Loads and parses given ORACC JSON, then saves the pieced-together
@@ -221,8 +222,8 @@ class JsonParser(object):
 
         # NOTE: was temporary, but now it'll stay
         # Add full exemplar name to the very top of docx
-        p = doc.add_paragraph()
-        p.add_run(self.cdl_dict["exemplars"])
+        #p = doc.add_paragraph()
+        #p.add_run(self.cdl_dict["exemplars"])
 
         nodes = self.cdl_dict["cdl"]
         for c_node in nodes:
@@ -308,7 +309,7 @@ class JsonParser(object):
             doc (docx.Document): docx object to append lemmas to
         """
         if not c_dict.get("id", ""):
-            print_if_verbose("No id for this c-node!")
+            print_if_verbose("No id for this c-node- returning!")
             return
 
         print_if_verbose("At c-node {0}".format(c_dict["id"]))
@@ -366,7 +367,7 @@ class JsonParser(object):
             # We want to keep a text flowing so that there's no empty lines
             # aside from before things like "Reverse"
             try:
-                if not doc.paragraphs[-1].runs[-1].text:
+                if len(doc.paragraphs) > 0 and len(doc.paragraphs[-1].runs) > 0 and not doc.paragraphs[-1].runs[-1].text:
                     print_if_verbose("Last line was empty, skipping line-start")
                     p = doc.add_paragraph()
             except Exception as e:
@@ -394,33 +395,54 @@ class JsonParser(object):
             p.add_run(d_dict["frag"])
             p.add_run(d_dict.get("delim", ""))
 
-        # Fuck this bit
-        # Shitty sidestep for now: if starts with uppercase, assume logogram/non-italics (it's fine for rinap mostly)
-        # If starts with lowercase, assume akkadian/italics
-        elif d_type == "excised" and "frag" in d_dict: # TODO wip, can't do subscript/superscript convert, italics... need to parse per char
-            self._add_excised_d_node(d_dict, doc)
+        # TODO: below is WIP
+        # what happens if the very first element of the paragraph is excised?
+        elif d_type == "excised" and "frag" in d_dict:
+            assert(len(doc.paragraphs) > 0)
+            print_if_verbose("EXCISED NODE HERE")
+            print_if_verbose(d_dict)
+            self._add_excised_d_node(d_dict, doc.paragraphs[-1])
 
         else:
             print_if_verbose("Unknown or noop d-value {0}".format(d_type))
 
-    def _add_excised_d_node(self, d_dict, doc):
-        """TODO Fuck this bit. Sidestepping for now (soln for which should work for now with RINAP):
-        if first non-<</>> char is uppercase, assume entire blob Sumerian/logogram/non-italics
-        If first non-<</>> char is lowercase, assume entire blob Akkadian/phonogram/italics
-        Won't work with stuff in eg. SAAO/SAA16 CAMS that may have eg. [<<BU>>], <<BU>>], or {<<d}60. Fuck you CAMS/SAAO.
-        Ideally, you'd tokenize everything in the middle of the <</>>'s and make them into eg. gdl_dicts
-        to pass off to functions like _add_continuing_sign_form().
+    def _add_excised_d_node(self, d_dict, paragraph):
+        """Add a D-node of type "excised". These nodes don't come with the same members/metadata as L-nodes,
+        even if the node's contents have more than one sign in it. Doesn't replace subscript #'s or convert 2/3
+        subscripts to accented marks- apparently OCHRE understands that fine.
+
+        TODO: see how well this works with SAAO/SAA16 or CAMS that may have eg. [<<BU>>], <<BU>>], or {<<d}60.
+        TODO: test with eg. "{<<uru}arba-il₃>>" like in P334914 in saao
+        TODO reuse this with SAAO fragments that aren't d-nodes?
         """
         frag = d_dict["frag"].replace("<<", "«").replace("<", "‹").replace(">>", "»").replace(">", "›")
-        #frag = self._convert_2_or_3_subscript(frag)
-        stripped_frag = frag.strip("«").strip("»").strip("[")
-        p = doc.add_paragraph()
-        r = p.add_run(frag)
 
-        if stripped_frag[0].islower(): # Seems like entire actual char portion of frag is Akkadian, make it all italic
-            r.italic = True
+        det_start_index = frag.find("{")
+        det_end_index = frag.find("}")
 
-        p.add_run(frag + d_dict["delim"])
+        # if only } is detected, let's just start off assuming it's a determinative until we meet }
+        if det_start_index == -1 and det_end_index > -1:
+            det_mode = True
+        else:
+            det_mode = False
+
+        for char in frag:
+            if char == "{": # begin det mode, ignore char
+                det_mode = True
+            elif char == "}": # end det mode, ignore char
+                det_mode = False
+            elif char.isalpha() or char.isdigit(): # Sumerian or Akkadian, or a subscript #
+                if det_mode and char.islower() and char != "m" and char != "d": # NOTE this assumes only Sumerian determinatives
+                    char = char.capitalize() # tested and should work fine with eg. Ğ.
+                r = paragraph.add_run(char)
+                if char.islower(): # Akkadian - set italics
+                    r.italic = True
+                if det_mode:
+                    r.superscript = True
+            else: # symbol, probably like - or [ or ], or << <
+                paragraph.add_run(char)
+
+        paragraph.add_run(d_dict["delim"])
 
     def parse_l_node(self, l_dict, doc):
         """Gets L(emma) node text, formats it, and adds it to the last paragraph of doc.
@@ -465,6 +487,7 @@ class JsonParser(object):
             l_dict (dict): dict version of an L node above
             doc (docx.Document): document object to append lemma to
         """
+        print_if_verbose("At L-node {0}".format(l_dict["ref"]))
         # Check if this frag's already been added
         ref = l_dict["ref"]
         if ref in self.l_reflist:
@@ -484,10 +507,19 @@ class JsonParser(object):
             print_if_verbose("Adding English fragment")
             self._add_english_frag(l_dict, last_paragraph)
             return
-        elif lang != "akk":  # eg. sux for Sumerian
+        elif lang != "akk" and lang != "akk-949":  # eg. sux for Sumerian
             print_if_verbose("Unrecognized language {0}".format(lang))
 
-        gdl_list = l_dict["f"]["gdl"]
+        # TODO: I dunno what to do for this...
+        gdl_list = l_dict.get("f", "").get("gdl", "")
+        if not gdl_list:
+            # This seems to happen only for SAAO/Suhu: no gdl in the f member of L-node
+            # However, contents of f is not usable- it's often an assembled Akkadian word
+            # rather than transliterated version (eg. bilticu vs. GUN-cu).
+            # We'll have to use the online version at this point using the ref #
+            print("INCOMPLETE TEXT starting at {0}- scraping web equivalent at http://oracc.museum.upenn.edu/{1}/{2}".format(l_dict["ref"], self.project, self.q_number))
+            self._scrape_incomplete_l_node(l_dict["ref"], last_paragraph)
+            return
 
         for index in range(len(gdl_list)):
             node_dict = gdl_list[index]
@@ -501,7 +533,7 @@ class JsonParser(object):
                 # since OCHRE will otherwise attempt to look up
                 # eg. "md" instead of "m" and "d" dets separately
                 try:
-                    if "det" in gdl_list[index + 1]:
+                    if len(gdl_list) > index + 1 and "det" in gdl_list[index + 1]:
                         self._add_determinative(node_dict, last_paragraph, add_space_delim=True)
                     else:
                         self._add_determinative(node_dict, last_paragraph)
@@ -516,6 +548,44 @@ class JsonParser(object):
             else:
                 print_if_verbose("Unknown l-node {0}".format(node_dict))
         last_paragraph.add_run(l_dict["f"].get("delim", "")) # TODO still needed?
+
+    def _scrape_incomplete_l_node(self, ref_id, paragraph):
+        """For L-nodes that have no gdl_dict and must rely on their online counterparts in ORACC
+        to get inputted properly.
+        eg. from http://oracc.museum.upenn.edu/rinap/rinap1/Q003418/html:
+        <span class="w N " id="Q003418.5.12">
+          <a class="cbd " >
+            ⸢
+            <span class="sign sux ">UD</span>
+            ⸣.
+            <span class="sign sux ">MEŠ</span>
+          </a>
+        </span>
+        TODO: ref_id isn't guaranteed to be in the web equivalent,
+        add it like a d-fragment instead in that case?
+        """
+        url = "http://oracc.museum.upenn.edu/{0}/{1}".format(self.project, self.q_number)
+
+        if not self.soup: # lazy load
+            soup = BeautifulSoup(requests.get(url).content, "html.parser")
+
+        parent = soup.find("span", {"id": ref_id}) # Assume only 1 span with this ID
+
+        if parent.a: # eg. http://oracc.museum.upenn.edu/suhu/Q006238 has no <a> below
+            parent = parent.a
+
+        for snippet in parent:
+            if type(snippet) is bs4.element.Tag: # is a <span> or <sup>
+                r = paragraph.add_run(snippet.text)
+                print_if_verbose("Adding {}".format(snippet.text))
+                if snippet.name == "sup":
+                    r.superscript = True
+                elif snippet.name == "span" and "akk" in snippet["class"]:
+                    r.italic = True
+            elif type(snippet) == bs4.element.NavigableString: # is just filler chars
+                r = paragraph.add_run(snippet)
+                print_if_verbose("Adding {}".format(snippet))
+        paragraph.add_run(" ") # assumed delim afterwards
 
     def _add_aramaic_frag(self, l_node, paragraph):
         """Adds Aramaic fragment to current paragraph with all needed formatting.
@@ -545,6 +615,7 @@ class JsonParser(object):
 
     def _add_english_frag(self, l_node, paragraph):
         """Adds English fragment to current paragraph with all needed formatting.
+        NOTE: Technically not needed.
         Example of English L node which this function will work on (in rinap/rinap4/corpusjson/Q003344.json):
         {
             "node": "l",
@@ -584,7 +655,7 @@ class JsonParser(object):
         r = paragraph.add_run(word)
         if word.islower():
             r.italic = True
-        print_if_verbose("Added continuing sign {0}".format(word))
+        ##print_if_verbose("Added continuing sign {0}".format(word))
 
         self._add_post_frag_symbols(gdl_node, paragraph)
 
@@ -624,7 +695,7 @@ class JsonParser(object):
             det = self._convert_2_or_3_subscript(det)
             r = paragraph.add_run(det)
             r.font.superscript = True
-            print_if_verbose("Added determinative {0}".format(det))
+            ##print_if_verbose("Added determinative {0}".format(det))
 
             self._add_post_frag_symbols(det_node, paragraph)
             if add_space_delim:  # if there's another det right after this
@@ -667,7 +738,7 @@ class JsonParser(object):
         # Add actual logogram
         logogram = self._convert_2_or_3_subscript(gdl_node["s"])
         paragraph.add_run(logogram)
-        print_if_verbose("Added logogram {0}".format(logogram))
+        ##print_if_verbose("Added logogram {0}".format(logogram))
 
         self._add_post_frag_symbols(gdl_node, paragraph)
 
@@ -810,6 +881,7 @@ class JsonParser(object):
     def _convert_2_or_3_subscript(self, sign):
         """Converts a sign containing a numerical 2 or 3 subscript to have its
         first vowel be properly accented.
+        NOTE: Technically not needed...
         Args:
             sign (str): transliterated string of sign with some subscript,
                  eg. bi₂
@@ -995,8 +1067,6 @@ def main():
                         help='A path (file or directory) to the JSON file to parse into DOCX')
     parser.add_argument('--verbose', '-v', required=False, action="store_true",
                         help='Enable verbose mode during parsing')
-    parser.add_argument('--use-exemplar', '-x', required=False, action="store_true",
-                        help='Enable use of exemplar sources/citations as the name for final output instead of Q or P-number')
     parser.add_argument('--output-directory', '-o', required=False, action="store", default=".",
                         help="Specify directory to output result(s) to. This script will output to the current directory by default.")
     args = parser.parse_args()
@@ -1005,7 +1075,7 @@ def main():
         global VERBOSE_FLAG
         VERBOSE_FLAG = True
 
-    jl = JsonLoader(args.file, args.use_exemplar)
+    jl = JsonLoader(args.file)
     for json_dict in jl.get_json_dicts():
         jp = JsonParser(json_dict, args.output_directory)
         jp.run()
