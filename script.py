@@ -179,26 +179,26 @@ class JsonParser(object):
         self.traversed_first_c_sentence_node = False  # TODO don't need this anymore if we're not using c-labels
         self.found_obverse_or_reverse_d_node = False  # trigger on first type=discourse c-node?
 
-        self.q_number = json_dict["textid"]
-        self.project = json_dict["project"]
+        self.q_number = json_dict.get("textid", None)  # NOTE: this can be a P-number, q-number is misleading...
+        self.project = json_dict.get("project", None)
 
-        self.exemplars = json_dict["exemplars"] # extra from JSONReader
-        self.primary_publication = json_dict["primary_publication"] # eg. Esarhaddon 088
-        self.museums = json_dict["collection"] # eg. British Museum, London, UK
+        self.exemplars = json_dict.get("exemplars") # extra from JSONReader
+        self.primary_publication = json_dict.get("primary_publication") # eg. Esarhaddon 088
+        self.museums = json_dict.get("collection") # eg. British Museum, London, UK
 
         self.soup = None
+        self.has_aramaic = False
 
     def run(self):
         """Loads and parses given ORACC JSON, then saves the pieced-together
         text into a docx on disk.
         """
-        textid = self.cdl_dict.get("textid", "")
-        if not textid:
+        if not self.q_number:
             print_if_verbose("Skipping malformed JSON from {0}:".format(self.cdl_dict["original_path"]))
             print_if_verbose(self.cdl_dict)
             return
         print_if_verbose(
-            "Parsing textid {0} from project {1}".format(textid, self.cdl_dict["project"])
+            "Parsing textid {0} from project {1}".format(self.q_number, self.cdl_dict["project"])
         )
         doc = Document()
         res = self.parse_json(doc)
@@ -220,11 +220,6 @@ class JsonParser(object):
             print("Not a CDL-type JSON!\n")
             return
 
-        # NOTE: was temporary, but now it'll stay
-        # Add full exemplar name to the very top of docx
-        #p = doc.add_paragraph()
-        #p.add_run(self.cdl_dict["exemplars"])
-
         nodes = self.cdl_dict["cdl"]
         for c_node in nodes:
             chunk = c_node
@@ -240,7 +235,20 @@ class JsonParser(object):
             doc (docx.Document): fully assembled docx object to be saved
         """
         try:
+            # Check first to make sure there's anything worth saving, eg. an empty JSON
+            p_text = ""
+            for p in doc.paragraphs:
+                for r in p.runs:
+                    p_text += r.text
+            p_text = p_text.strip()
+            if not p_text or p_text == "Obverse" or p_text == "Text":
+                print_if_verbose("No text in this docx- skipping save!")
+                return
+
+            # Otherwise, go on and save it
             docx_name = self._get_docx_name_to_save(self.cdl_dict["docx_name"]) + ".docx"
+            if self.has_aramaic:
+                docx_name = "(arc) " + docx_name
             docx_path = os.path.join(self.output_directory, docx_name)
             doc.save(docx_path)
             print("Saved docx in {0}".format(docx_path))
@@ -290,12 +298,13 @@ class JsonParser(object):
             print_if_verbose(s)
 
         # Seeing if we're balanced or not
-        print_if_verbose("[ count: {0}".format(full_left_brackets))
-        print_if_verbose("] count: {0}".format(full_right_brackets))
-        print_if_verbose("⸢ count: {0}".format(partial_left_brackets))
-        print_if_verbose("⸣ count: {0}".format(partial_left_brackets))
+        #print_if_verbose("[ count: {0}".format(full_left_brackets))
+        #print_if_verbose("] count: {0}".format(full_right_brackets))
+        #print_if_verbose("⸢ count: {0}".format(partial_left_brackets))
+        #print_if_verbose("⸣ count: {0}".format(partial_left_brackets))
         #assert(full_left_brackets == full_right_brackets) # TODO restore if you remove exemplar name
         #assert(partial_left_brackets == partial_right_brackets) # TODO ditto
+        print_if_verbose("--------------------------------------\n")
 
     def traverse_c_node(self, c_dict, doc, first_c_node=False):
         """Decides what to do for each of the nodes in a c-node's node list.
@@ -313,18 +322,6 @@ class JsonParser(object):
             return
 
         print_if_verbose("At c-node {0}".format(c_dict["id"]))
-
-        # NOTE: If C node has a label, do we put it in? But it can be there if there's also
-        # D-nodes already with eg. "Obverse"
-        # if c_dict["type"] == "sentence" and "label" in c_dict:
-        #     print_if_verbose("Looks like a sentence with a label, {0}".format(c_dict["label"]))
-        #     if not self.traversed_first_c_sentence_node:
-        #         print_if_verbose("Traversed my first C-node sentence!")
-        #         self.traversed_first_c_sentence_node = True
-        #     else:
-        #         doc.add_paragraph()  # means this is after the first time, so extra newline needed
-        #     p = doc.add_paragraph()
-        #     p.add_run(c_dict["label"])
 
         # If we've reached the point of starting the actual text, ie. no D-nodes
         # with "obverse" or "reverse" have been encountered so far, we still need
@@ -367,9 +364,21 @@ class JsonParser(object):
             # We want to keep a text flowing so that there's no empty lines
             # aside from before things like "Reverse"
             try:
-                if len(doc.paragraphs) > 0 and len(doc.paragraphs[-1].runs) > 0 and not doc.paragraphs[-1].runs[-1].text:
-                    print_if_verbose("Last line was empty, skipping line-start")
-                    p = doc.add_paragraph()
+                # Assemble any text from the last run of last paragraph
+                p_text = ""
+                for r in doc.paragraphs[-1].runs:
+                    p_text += r.text
+
+                # If text contains prior D-node, make sure to not add a space!
+                if "Text" in p_text or "Obverse" in p_text or "Reverse" in p_text or "column" in p_text:
+                    print_if_verbose("Last line was a D-node header '{0}', skipping line-start".format(p_text))
+
+                elif p_text.strip() == "":  # a whitespace-only paragraph
+                    print_if_verbose("Last paragraph was empty, skipping line-start")
+
+                else:
+                    print_if_verbose("Last paragraph was NOT empty. Applying line-start newline.")
+                    doc.add_paragraph()
             except Exception as e:
                 print("Couldn't get last run before this line-start: {0}".format(e))
             # NOTE: disabled below since this was adding eg. custom line numbers that OCHRE won't be able to parse
@@ -378,6 +387,10 @@ class JsonParser(object):
 
         elif d_type == "obverse":
             p = doc.add_paragraph()
+            # there'll be at least 2 paragraphs already if "Text" present
+            # if "obverse" in the middle and not at start, needs extra newline
+            if len(doc.paragraphs) >= 2:
+                p = doc.add_paragraph()
             p.add_run("Obverse")
             doc.add_paragraph()
             self.found_obverse_or_reverse_d_node = True
@@ -399,9 +412,14 @@ class JsonParser(object):
         # what happens if the very first element of the paragraph is excised?
         elif d_type == "excised" and "frag" in d_dict:
             assert(len(doc.paragraphs) > 0)
-            print_if_verbose("EXCISED NODE HERE")
-            print_if_verbose(d_dict)
             self._add_excised_d_node(d_dict, doc.paragraphs[-1])
+
+        elif d_type == "excised" and "frag" not in d_dict:
+            print_if_verbose("Excised node without frag:")
+            print_if_verbose(d_dict)
+
+        elif d_type == "nonx" or d_type == "nonw" or d_type == "object" or d_type == "surface":
+            pass
 
         else:
             print_if_verbose("Unknown or noop d-value {0}".format(d_type))
@@ -415,7 +433,7 @@ class JsonParser(object):
         TODO: test with eg. "{<<uru}arba-il₃>>" like in P334914 in saao
         TODO reuse this with SAAO fragments that aren't d-nodes?
         """
-        frag = d_dict["frag"].replace("<<", "«").replace("<", "‹").replace(">>", "»").replace(">", "›")
+        frag = d_dict["frag"].replace("<<", "«").replace("<", "‹").replace(">>", "»").replace(">", "›").replace("$", "")
 
         det_start_index = frag.find("{")
         det_end_index = frag.find("}")
@@ -427,22 +445,24 @@ class JsonParser(object):
             det_mode = False
 
         for char in frag:
-            if char == "{": # begin det mode, ignore char
+            if char == "{":  # begin det mode, ignore char
                 det_mode = True
-            elif char == "}": # end det mode, ignore char
+            elif char == "}":  # end det mode, ignore char
                 det_mode = False
             elif char.isalpha() or char.isdigit(): # Sumerian or Akkadian, or a subscript #
                 if det_mode and char.islower() and char != "m" and char != "d": # NOTE this assumes only Sumerian determinatives
                     char = char.capitalize() # tested and should work fine with eg. Ğ.
                 r = paragraph.add_run(char)
-                if char.islower(): # Akkadian - set italics
+                if char.islower():  # Akkadian - set italics
                     r.italic = True
                 if det_mode:
                     r.superscript = True
-            else: # symbol, probably like - or [ or ], or << <
+            else:  # symbol, probably like - or [ or ], or << <
                 paragraph.add_run(char)
 
-        paragraph.add_run(d_dict["delim"])
+        paragraph.add_run(d_dict.get("delim"))
+        print_if_verbose("Added excised D-node {0}".format(d_dict['frag']))
+        print_if_verbose(d_dict)
 
     def parse_l_node(self, l_dict, doc):
         """Gets L(emma) node text, formats it, and adds it to the last paragraph of doc.
@@ -482,7 +502,6 @@ class JsonParser(object):
                 "pos": "u"
             }
         }
-
         Args:
             l_dict (dict): dict version of an L node above
             doc (docx.Document): document object to append lemma to
@@ -497,17 +516,17 @@ class JsonParser(object):
             self.l_reflist.append(ref)
 
         last_paragraph = doc.paragraphs[-1]
-        lang = l_dict["f"]["lang"]
+        lang = l_dict.get("f").get("lang")
 
         if lang == "arc":  # eg. Aramaic
             print_if_verbose("Adding Aramaic fragment")
             self._add_aramaic_frag(l_dict, last_paragraph)
             return
         elif lang == "qcu-949":  # seemingly English...
-            print_if_verbose("Adding English fragment")
-            self._add_english_frag(l_dict, last_paragraph)
+            print_if_verbose("Not adding English fragment...")
             return
-        elif lang != "akk" and lang != "akk-949":  # eg. sux for Sumerian
+        elif lang != "akk" and lang != "akk-949" and \
+                lang != "akk-x-neoass" and lang != "sux":
             print_if_verbose("Unrecognized language {0}".format(lang))
 
         # TODO: I dunno what to do for this...
@@ -518,6 +537,7 @@ class JsonParser(object):
             # rather than transliterated version (eg. bilticu vs. GUN-cu).
             # We'll have to use the online version at this point using the ref #
             print("INCOMPLETE TEXT starting at {0}- scraping web equivalent at http://oracc.museum.upenn.edu/{1}/{2}".format(l_dict["ref"], self.project, self.q_number))
+            print_if_verbose("Raw fragment is {0}".format(l_dict["frag"]))
             self._scrape_incomplete_l_node(l_dict["ref"], last_paragraph)
             return
 
@@ -533,18 +553,40 @@ class JsonParser(object):
                 # since OCHRE will otherwise attempt to look up
                 # eg. "md" instead of "m" and "d" dets separately
                 try:
+                    print_if_verbose("currently at index {0}, gdl_list has {1} elements".format(index, len(gdl_list)))
                     if len(gdl_list) > index + 1 and "det" in gdl_list[index + 1]:
-                        self._add_determinative(node_dict, last_paragraph, add_space_delim=True)
+                        self._add_determinative(node_dict, last_paragraph, add_dot_delim=True)
+                        print_if_verbose("Added first in set of multiple DETs")
                     else:
                         self._add_determinative(node_dict, last_paragraph)
                 except Exception as e:
                     print("Looks like a single determinative, not 2 stuck together! Exception: {0}".format(e))
+                    raise e
             elif "gg" in node_dict:
                 self._add_logogram_cluster(node_dict, last_paragraph)
             elif "x" in node_dict:
                 self._add_ellipsis(node_dict, last_paragraph)
             elif "n" in node_dict:
                 self._add_number(node_dict, last_paragraph)
+            elif "q" in node_dict:
+                # TODO add dedicated function
+                d_dict = {
+                    "frag": node_dict["q"].replace("|", ""),
+                    "delim": node_dict.get("delim"),
+                }
+                self._add_excised_d_node(d_dict, last_paragraph)
+                print_if_verbose("Added qualified element {0} via parse_l_node".format(node_dict["q"]))
+            elif "c" in node_dict:
+                # TODO add dedicated function
+                c_frag = node_dict["c"].replace("|", "")
+                last_paragraph.add_run(c_frag + node_dict.get("delim"))
+                print_if_verbose("Added composite fragment {0}".format(node_dict['c']))
+            elif "mods" in node_dict:
+                self._add_pre_frag_symbols(node_dict, last_paragraph)
+                last_paragraph.add_run(node_dict["form"])
+                self._add_post_frag_symbols(node_dict, last_paragraph)
+                last_paragraph.add_run(node_dict.get("delim", ""))
+                print_if_verbose("Added mods L-node {0}".format(node_dict["form"]))
             else:
                 print_if_verbose("Unknown l-node {0}".format(node_dict))
         last_paragraph.add_run(l_dict["f"].get("delim", "")) # TODO still needed?
@@ -561,30 +603,38 @@ class JsonParser(object):
             <span class="sign sux ">MEŠ</span>
           </a>
         </span>
-        TODO: ref_id isn't guaranteed to be in the web equivalent,
-        add it like a d-fragment instead in that case?
+        NOTE: ref_id isn't guaranteed to be in the web equivalent, let's ignore it if it's missing
         """
         url = "http://oracc.museum.upenn.edu/{0}/{1}".format(self.project, self.q_number)
 
         if not self.soup: # lazy load
-            soup = BeautifulSoup(requests.get(url).content, "html.parser")
+            self.soup = BeautifulSoup(requests.get(url).content, "html.parser")
 
-        parent = soup.find("span", {"id": ref_id}) # Assume only 1 span with this ID
+        parent = self.soup.find("span", {"id": ref_id}) # Assume only 1 span with this ID
+
+        if not parent:
+            print_if_verbose("Skipping this ID scrape - id {0} not in web equivalent".format(ref_id))
+            return
 
         if parent.a: # eg. http://oracc.museum.upenn.edu/suhu/Q006238 has no <a> below
             parent = parent.a
 
+        # TODO: replace <<, <, etc. first. Is it needed at all though? d-nodes are what have << >> usually
+
         for snippet in parent:
             if type(snippet) is bs4.element.Tag: # is a <span> or <sup>
                 r = paragraph.add_run(snippet.text)
-                print_if_verbose("Adding {}".format(snippet.text))
                 if snippet.name == "sup":
-                    r.superscript = True
+                    r.font.superscript = True
+                    print_if_verbose("Adding scraped determinative {}".format(snippet.text))
                 elif snippet.name == "span" and "akk" in snippet["class"]:
                     r.italic = True
+                    print_if_verbose("Adding scraped Akkadian {}".format(snippet.text))
+                else:
+                    print_if_verbose("Adding scraped Sumerian {}".format(snippet.text))
             elif type(snippet) == bs4.element.NavigableString: # is just filler chars
                 r = paragraph.add_run(snippet)
-                print_if_verbose("Adding {}".format(snippet))
+                print_if_verbose("Adding scraped etc character {}".format(snippet))
         paragraph.add_run(" ") # assumed delim afterwards
 
     def _add_aramaic_frag(self, l_node, paragraph):
@@ -612,31 +662,7 @@ class JsonParser(object):
                 r.italic = True
         # Aramaic nodes have no "delim", but should be separated with space
         paragraph.add_run(" ")
-
-    def _add_english_frag(self, l_node, paragraph):
-        """Adds English fragment to current paragraph with all needed formatting.
-        NOTE: Technically not needed.
-        Example of English L node which this function will work on (in rinap/rinap4/corpusjson/Q003344.json):
-        {
-            "node": "l",
-            "frag": "Horned",
-            "id": "Q003344.l05b8e",
-            "ref": "Q003344.3.1",
-            "inst": "%qcu-949:*=",
-            "f": {
-              "lang": "qcu-949",
-              "form": "*",
-              "norm": "Horned"
-            }
-        }
-
-        Args:
-            l_node (dict): English lang node to be added
-            paragraph (docx.text.paragraph.Paragraph): paragraph to add English fragment to
-        """
-        frag = l_node["frag"]
-        paragraph.add_run(frag)
-        paragraph.add_run(" ") # English nodes have no other default delim
+        self.has_aramaic = True
 
     def _add_continuing_sign_form(self, gdl_node, paragraph):
         """Adds eg. tu- to the current paragraph.
@@ -659,7 +685,7 @@ class JsonParser(object):
 
         self._add_post_frag_symbols(gdl_node, paragraph)
 
-    def _add_determinative(self, gdl_node, paragraph, add_space_delim=False):
+    def _add_determinative(self, gdl_node, paragraph, add_dot_delim=False):
         """Adds determinative to given paragraph and adds necessary styling.
         Example of a node that this would work on (from rinap/rinap1/corpusjson/Q003414.json):
         {
@@ -686,22 +712,39 @@ class JsonParser(object):
                gdl_node.get("det", "") == "phonetic")
 
         if gdl_node["pos"] == "pre" or gdl_node["pos"] == "post":
-            det_node = gdl_node["seq"][0]
+            det_node = gdl_node["seq"][0] # TODO assumes seq dict only has 1 member- seems true so far...
 
-            self._add_pre_frag_symbols(det_node, paragraph) # TODO document why det node
+            self._add_pre_frag_symbols(det_node, paragraph) # TODO document why det node passed in
 
             # Add the determinative to paragraph with needed stylings
-            det = det_node.get("s", det_node.get("v", ""))
+            if "s" in det_node: # traditional DET node
+                det = det_node["s"]
+                print_if_verbose("Adding regular det form {0}".format(det))
+            elif "v" in det_node: # alt to first; esp. for ones like m or d
+                det = det_node["v"]
+                print_if_verbose("Adding alternative det form {0}".format(det))
+            elif "mods" in det_node: # eg. LU2~v
+                det = det_node["form"]
+                print_if_verbose("Adding MODS det form {0}".format(det))
+            elif "n" in det_node: # numeral det, eg. 1(dic)
+                # The 1 det is actually the same as m... compare saa19/x900013 online and in json
+                det = det_node["form"]
+                if det == "1":
+                    det = "m"
+                print_if_verbose("Adding numeral det {0}".format(det))
+            else:
+                print_if_verbose("Unknown DET type: {0}".format(det_node))
+
             det = self._convert_2_or_3_subscript(det)
             r = paragraph.add_run(det)
             r.font.superscript = True
-            ##print_if_verbose("Added determinative {0}".format(det))
 
             self._add_post_frag_symbols(det_node, paragraph)
-            if add_space_delim:  # if there's another det right after this
+            if add_dot_delim:  # if there's another det right after this
                 r = paragraph.add_run(".")  # TODO use . or space? Space looked a bit weird, so let's try .
                 r.font.superscript = True
-                print_if_verbose("Added extra . delim for double determinative")
+                print_if_verbose("Added extra . delim for double determinative:")
+                print_if_verbose(gdl_node)
         else:
             print_if_verbose("Unknown determinative position {0}".format(gdl_node["pos"]))
 
@@ -730,8 +773,9 @@ class JsonParser(object):
               ...
         }
         """
-        assert(gdl_node.get("s", "") and
-               gdl_node.get("role", "") == "logo")
+        assert(gdl_node.get("s", ""))
+        if gdl_node.get("role", "") != "logo":
+            print_if_verbose("Non-logo logogram found! {0}".format(gdl_node["s"]))
 
         self._add_pre_frag_symbols(gdl_node, paragraph)
 
@@ -796,6 +840,26 @@ class JsonParser(object):
                 self._add_logogram_cluster(logo_dict, paragraph) # eg. for ligatures
             elif "x" in logo_dict:
                 self._add_ellipsis(logo_dict, paragraph)
+            elif "q" in logo_dict:
+                # TODO add dedicated function for this
+                d_dict = {
+                    "frag": logo_dict["q"].replace("|", ""),
+                    "delim": logo_dict.get("delim"),
+                }
+                self._add_excised_d_node(d_dict, paragraph)
+                print_if_verbose("Added qualified element {0}".format(logo_dict["q"]))
+            elif "c" in logo_dict:
+                # TODO: add dedicated function for this
+                c_frag = logo_dict["c"].replace("|", "")
+                paragraph.add_run(c_frag + logo_dict.get("delim"))
+                print_if_verbose("Added composite fragment {0}".format(c_frag))
+            elif "mods" in logo_dict:
+                # TODO add dedicated function for this
+                self._add_pre_frag_symbols(logo_dict, paragraph)
+                paragraph.add_run(logo_dict["form"])
+                self._add_post_frag_symbols(logo_dict, paragraph)
+                paragraph.add_run(logo_dict.get("delim", ""))
+                print_if_verbose("Added MODS logo cluster {0}".format(logo_dict["form"]))
             else:
                 print_if_verbose("Non-sign or determinative found in logogram cluster {0}".format(logo_dict))
         paragraph.add_run(gdl_node.get("delim", "")) # delim after the cluster
@@ -816,7 +880,7 @@ class JsonParser(object):
         paragraph.add_run(gdl_node["form"])
         self._add_post_frag_symbols(gdl_node, paragraph)
 
-        print_if_verbose("Added number {0}".format(gdl_node["form"]))
+        #print_if_verbose("Added number {0}".format(gdl_node["form"]))
 
     def _add_pre_frag_symbols(self, gdl_node, paragraph):
         """Adds any symbols that come before the actual text fragment.
@@ -834,7 +898,7 @@ class JsonParser(object):
         o_frag = gdl_node.get("o", "").strip("[]")
         if "id" in gdl_node and gdl_node.get("statusStart", "") == gdl_node["id"]:
             # o needs to be mirrored first to be an opener frag like ( or < or <<
-            o_frag = o_frag.replace("<<", "«").replace("<", "‹").replace(">>", "»").replace(">", "›") # NOTE new
+            o_frag = o_frag.replace("<<", "«").replace("<", "‹").replace(">>", "»").replace(">", "›").replace("$", "")
             o_mirror = closing_punct_mirror[o_frag]
             paragraph.add_run(o_mirror)
 
@@ -844,7 +908,7 @@ class JsonParser(object):
 
         # Partial fragment break start
         if gdl_node.get("ho", ""):
-            paragraph.add_run("⸢")
+            paragraph.add_run("⸢") # note: may look inverted on P50, but it's normal, I assure you
 
     def _add_post_frag_symbols(self, gdl_node, paragraph):
         """Adds any symbols that come after the actual text fragment.
@@ -860,14 +924,14 @@ class JsonParser(object):
 
         # Partial fragment break end
         if gdl_node.get("hc", ""):
-            paragraph.add_run("⸣")
+            paragraph.add_run("⸣") # note: may look inverted on P50, but it's normal, I assure you
 
         # o for whatever reason may include [ or ], but this is already taken
         # care of by breakStart and breakEnd. Leave o to just be eg. ( ) < >>
         o_frag = gdl_node.get("o", "").strip("[]")
         if "id" in gdl_node and gdl_node.get("statusStart", "") == gdl_node["id"]:
             # o should already be a closer frag like ) or > or >>
-            o_frag = o_frag.replace("<<", "«").replace("<", "‹").replace(">>", "»").replace(">", "›") # NOTE new
+            o_frag = o_frag.replace("<<", "«").replace("<", "‹").replace(">>", "»").replace(">", "›").replace("$", "")
             paragraph.add_run(o_frag)
 
         # Full fragment break end
@@ -876,7 +940,10 @@ class JsonParser(object):
 
         # Whatever delimiter follows, eg. - or space
         if gdl_node.get("delim", ""):
-            paragraph.add_run(gdl_node["delim"])
+            if gdl_node.get("delim") == "/": # eg. AB / BA needs spacing around / to parse correctly
+                paragraph.add_run(" {0} ".format(gdl_node.get("delim")))
+            else:
+                paragraph.add_run(gdl_node["delim"])
 
     def _convert_2_or_3_subscript(self, sign):
         """Converts a sign containing a numerical 2 or 3 subscript to have its
@@ -891,7 +958,7 @@ class JsonParser(object):
         """
         if not sign[-1].isdigit(): # No subscript # here
             return sign
-        if sign[-2].isdigit():  # number was eg. 12 or 13- not just 2 or 3
+        if len(sign) > 2 and sign[-2].isdigit():  # number was eg. 12 or 13- not just 2 or 3
             return sign
 
         if sign[-1] == "₂":
