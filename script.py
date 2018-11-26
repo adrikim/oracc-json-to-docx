@@ -526,7 +526,8 @@ class JsonParser(object):
             print_if_verbose("Not adding English fragment...")
             return
         elif lang != "akk" and lang != "akk-949" and \
-                lang != "akk-x-neoass" and lang != "sux":
+                lang != "akk-x-neoass" and lang != "sux" and \
+                lang != "akk-x-neobab":
             print_if_verbose("Unrecognized language {0}".format(lang))
 
         # TODO: I dunno what to do for this...
@@ -553,7 +554,6 @@ class JsonParser(object):
                 # since OCHRE will otherwise attempt to look up
                 # eg. "md" instead of "m" and "d" dets separately
                 try:
-                    print_if_verbose("currently at index {0}, gdl_list has {1} elements".format(index, len(gdl_list)))
                     if len(gdl_list) > index + 1 and "det" in gdl_list[index + 1]:
                         self._add_determinative(node_dict, last_paragraph, add_dot_delim=True)
                         print_if_verbose("Added first in set of multiple DETs")
@@ -561,7 +561,7 @@ class JsonParser(object):
                         self._add_determinative(node_dict, last_paragraph)
                 except Exception as e:
                     print("Looks like a single determinative, not 2 stuck together! Exception: {0}".format(e))
-                    raise e
+                    raise e # NOTE keeping this around for debug purposes; this ideally should never hit
             elif "gg" in node_dict:
                 self._add_logogram_cluster(node_dict, last_paragraph)
             elif "x" in node_dict:
@@ -593,7 +593,7 @@ class JsonParser(object):
 
     def _scrape_incomplete_l_node(self, ref_id, paragraph):
         """For L-nodes that have no gdl_dict and must rely on their online counterparts in ORACC
-        to get inputted properly.
+        to get inputted properly. Usually from ribo/babylon6.
         eg. from http://oracc.museum.upenn.edu/rinap/rinap1/Q003418/html:
         <span class="w N " id="Q003418.5.12">
           <a class="cbd " >
@@ -623,6 +623,10 @@ class JsonParser(object):
 
         for snippet in parent:
             if type(snippet) is bs4.element.Tag: # is a <span> or <sup>
+                if snippet.text == "?": # Online ORACC has superscript ?, but we want non-superscript (?)
+                    r = paragraph.add_run("(?)")
+                    print_if_verbose("Adding ? sup snippet as non-superscript (?)")
+                    continue
                 r = paragraph.add_run(snippet.text)
                 if snippet.name == "sup":
                     r.font.superscript = True
@@ -632,7 +636,7 @@ class JsonParser(object):
                     print_if_verbose("Adding scraped Akkadian {}".format(snippet.text))
                 else:
                     print_if_verbose("Adding scraped Sumerian {}".format(snippet.text))
-            elif type(snippet) == bs4.element.NavigableString: # is just filler chars
+            elif type(snippet) is bs4.element.NavigableString: # is just filler chars like [
                 r = paragraph.add_run(snippet)
                 print_if_verbose("Adding scraped etc character {}".format(snippet))
         paragraph.add_run(" ") # assumed delim afterwards
