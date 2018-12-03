@@ -583,7 +583,10 @@ class JsonParser(object):
                 print_if_verbose("Added composite fragment {0}".format(node_dict['c']))
             elif "mods" in node_dict:
                 self._add_pre_frag_symbols(node_dict, last_paragraph)
-                last_paragraph.add_run(node_dict["form"])
+                frag = node_dict["form"]
+                r = last_paragraph.add_run(frag)
+                if frag.islower():
+                    r.italic = True
                 self._add_post_frag_symbols(node_dict, last_paragraph)
                 last_paragraph.add_run(node_dict.get("delim", ""))
                 print_if_verbose("Added mods L-node {0}".format(node_dict["form"]))
@@ -860,7 +863,10 @@ class JsonParser(object):
             elif "mods" in logo_dict:
                 # TODO add dedicated function for this
                 self._add_pre_frag_symbols(logo_dict, paragraph)
-                paragraph.add_run(logo_dict["form"])
+                frag = logo_dict["form"]
+                r = paragraph.add_run(frag)
+                if frag.islower():
+                    r.italic = True
                 self._add_post_frag_symbols(logo_dict, paragraph)
                 paragraph.add_run(logo_dict.get("delim", ""))
                 print_if_verbose("Added MODS logo cluster {0}".format(logo_dict["form"]))
@@ -881,7 +887,14 @@ class JsonParser(object):
         """Adds a number to current paragraph, eg. 4.
         """
         self._add_pre_frag_symbols(gdl_node, paragraph)
-        paragraph.add_run(gdl_node["form"])
+        num = gdl_node["form"]
+        if num == "1/2":
+            num = "½"
+        elif num == "1/3":
+            num = "⅓"
+        elif num == "2/3":
+            num = "⅔"
+        paragraph.add_run(num)
         self._add_post_frag_symbols(gdl_node, paragraph)
 
         #print_if_verbose("Added number {0}".format(gdl_node["form"]))
