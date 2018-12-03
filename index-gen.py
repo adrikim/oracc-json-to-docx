@@ -18,7 +18,6 @@ Each entry contains:
 folders = [
     'ribo/babylon6',
     'ribo/babylon7',
-    'ribo/babylon8',
     'rinap/rinap1',
     'rinap/rinap3',
     'rinap/rinap4',
@@ -30,7 +29,6 @@ folders = [
     'saao/saa17',
     'saao/saa18',
     'saao/saa19',
-    'suhu'
 ]
 
 def _read_catalogue(json_path):
@@ -71,7 +69,7 @@ def create_flat_files(oracc_path, docx_parent_path):
         my_catalogue = {}
 
         # Parse catalogue JSON
-        catalogue_path = os.path.join(folder, "catalogue.json")
+        catalogue_path = os.path.join(oracc_path, folder, "catalogue.json")
         catalogue_dict = _read_catalogue(catalogue_path)
 
         members = catalogue_dict["members"]
